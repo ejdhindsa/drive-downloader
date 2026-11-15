@@ -1,0 +1,1317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Drive Downloader</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --surface: #121826;
+      --surface-2: #192234;
+      --border: #273248;
+      --text: #e5ecf6;
+      --muted: #8b9bb4;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --success: #22c55e;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --purple: #a855f7;
+      --radius: 12px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background: radial-gradient(circle at top, #121c30 0%, var(--bg) 55%);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.45;
+    }
+
+    .container {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 20px 16px 48px;
+    }
+
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .status-pills {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.78rem;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--warn);
+    }
+    .dot.live { background: var(--success); }
+    .dot.off { background: var(--danger); }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      margin-bottom: 18px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .card-header h2 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+
+    label {
+      display: block;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    input[type="text"],
+    select,
+    textarea {
+      width: 100%;
+      background: var(--surface-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-family: inherit;
+      font-size: 0.92rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    textarea {
+      font-family: var(--mono);
+      font-size: 0.84rem;
+      resize: vertical;
+      min-height: 84px;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--accent);
+    }
+
+    input:disabled, select:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    @media (max-width: 720px) {
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    }
+
+    .field { margin-bottom: 12px; }
+
+    .inline-group {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    .inline-group select { flex: 1; }
+
+    .dest-preview {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      color: #93c5fd;
+      background: rgba(59, 130, 246, 0.08);
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      padding: 8px 10px;
+      border-radius: 8px;
+      margin-bottom: 14px;
+      word-break: break-all;
+    }
+
+    .mode-switch {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    @media (max-width: 600px) {
+      .mode-switch { grid-template-columns: 1fr; }
+    }
+
+    .mode-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      cursor: pointer;
+    }
+
+    .mode-option.selected {
+      border-color: var(--accent);
+      background: rgba(59, 130, 246, 0.1);
+    }
+
+    .mode-option input { margin-top: 3px; }
+
+    .mode-title {
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .mode-desc {
+      font-size: 0.76rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .toggles {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+
+    .checkbox-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.86rem;
+      color: var(--text);
+      cursor: pointer;
+      margin: 0;
+      font-weight: 500;
+    }
+
+    .checkbox-label.disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    details {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      margin-bottom: 14px;
+    }
+
+    details.disabled {
+      opacity: 0.65;
+    }
+
+    summary {
+      cursor: pointer;
+      font-size: 0.84rem;
+      font-weight: 600;
+      color: var(--muted);
+      user-select: none;
+    }
+
+    .headers-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .header-row {
+      display: grid;
+      grid-template-columns: 1fr 1.5fr auto;
+      gap: 8px;
+    }
+
+    button {
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 9px 14px;
+      font-family: inherit;
+      font-size: 0.86rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+    }
+
+    button:hover:not(:disabled) {
+      background: #222e46;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+
+    .btn-danger {
+      color: #fca5a5;
+      border-color: rgba(239, 68, 68, 0.35);
+    }
+
+    .btn-danger:hover:not(:disabled) {
+      background: rgba(239, 68, 68, 0.15);
+    }
+
+    .btn-sm {
+      padding: 5px 10px;
+      font-size: 0.78rem;
+    }
+
+    .form-footer {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .hint {
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .alert {
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      margin-bottom: 12px;
+      display: none;
+    }
+
+    .alert.error {
+      display: block;
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #fecaca;
+    }
+
+    .alert.ok {
+      display: block;
+      background: rgba(34, 197, 94, 0.12);
+      border: 1px solid rgba(34, 197, 94, 0.35);
+      color: #bbf7d0;
+    }
+
+    .job-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 28px 12px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .job-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+    }
+
+    .job-top {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .job-title {
+      font-weight: 600;
+      font-size: 0.94rem;
+      word-break: break-word;
+    }
+
+    .job-url {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--muted);
+      word-break: break-all;
+      margin-top: 2px;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .badge {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+    }
+
+    .badge-mode {
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--muted);
+      border-color: var(--border);
+    }
+
+    .badge-queued { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; }
+    .badge-downloading { background: rgba(59, 130, 246, 0.16); color: #93c5fd; border-color: rgba(59, 130, 246, 0.35); }
+    .badge-extracting { background: rgba(168, 85, 247, 0.16); color: #d8b4fe; border-color: rgba(168, 85, 247, 0.35); }
+    .badge-uploading { background: rgba(245, 158, 11, 0.16); color: #fcd34d; border-color: rgba(245, 158, 11, 0.35); }
+    .badge-completed { background: rgba(34, 197, 94, 0.16); color: #86efac; border-color: rgba(34, 197, 94, 0.35); }
+    .badge-failed { background: rgba(239, 68, 68, 0.16); color: #fca5a5; border-color: rgba(239, 68, 68, 0.35); }
+    .badge-cancelled { background: rgba(100, 116, 139, 0.2); color: #94a3b8; }
+
+    .job-dest {
+      font-family: var(--mono);
+      font-size: 0.77rem;
+      color: #a5b4fc;
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+
+    .progress-wrap {
+      width: 100%;
+      height: 8px;
+      background: #0d131f;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-bottom: 8px;
+      border: 1px solid var(--border);
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent), #60a5fa);
+      transition: width 0.25s ease;
+    }
+
+    .progress-bar.extracting {
+      background: linear-gradient(90deg, var(--purple), #c084fc);
+      width: 100%;
+      animation: pulse 1.2s infinite ease-in-out;
+    }
+
+    .progress-bar.completed { background: var(--success); }
+    .progress-bar.failed { background: var(--danger); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.45; }
+      50% { opacity: 1; }
+    }
+
+    .job-stats {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 0.79rem;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .job-error {
+      font-size: 0.8rem;
+      color: #fca5a5;
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.25);
+      padding: 6px 10px;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      word-break: break-word;
+    }
+
+    .job-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .action-btns {
+      display: flex;
+      gap: 8px;
+    }
+
+    .job-logs {
+      margin-top: 10px;
+      margin-bottom: 0;
+      background: #0b0f17;
+      padding: 6px 10px;
+    }
+
+    .job-logs pre {
+      margin: 8px 0 0;
+      font-family: var(--mono);
+      font-size: 0.74rem;
+      color: #9fb0c9;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <h1>Drive Downloader</h1>
+      </div>
+      <div class="status-pills">
+        <span class="pill" id="diskPill">VPS Disk: --</span>
+        <span class="pill">
+          <span class="dot" id="sseDot"></span>
+          <span id="sseLabel">Connecting...</span>
+        </span>
+        <button type="button" class="btn-sm" id="jellyfinBtn" style="display:none">
+          Refresh Jellyfin
+        </button>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="card-header">
+        <h2>New Transfer</h2>
+        <span class="hint" id="urlCountHint">Paste one or more direct URLs</span>
+      </div>
+
+      <div class="alert" id="formAlert"></div>
+
+      <form id="downloadForm">
+        <div class="field">
+          <label for="urlsInput">Download URL(s) — one per line</label>
+          <textarea
+            id="urlsInput"
+            placeholder="https://example.com/Movie.2025.2160p.mkv&#10;https://example.com/SeasonPack.zip"
+            required
+          ></textarea>
+        </div>
+
+        <div class="grid-3">
+          <div class="field">
+            <label for="folderSelect">Drive Folder</label>
+            <div class="inline-group">
+              <select id="folderSelect" required>
+                <option value="">Loading...</option>
+              </select>
+              <button type="button" id="refreshFoldersBtn" title="Refresh Drive folders">↻</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="subfolderSelect">Existing Subfolder (optional)</label>
+            <select id="subfolderSelect">
+              <option value="">(None — root of folder)</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="newSubfolderInput">New Subfolder (optional)</label>
+            <input
+              type="text"
+              id="newSubfolderInput"
+              placeholder="e.g. Chernobyl (2019)/Season 01"
+            />
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="customFilenameInput">Custom Filename (optional, single URL only)</label>
+          <input
+            type="text"
+            id="customFilenameInput"
+            placeholder="Leave empty to auto-detect from URL / Content-Disposition"
+          />
+        </div>
+
+        <div class="dest-preview" id="destPreview">Destination: --</div>
+
+        <label>Transfer Mode</label>
+        <div class="mode-switch">
+          <label class="mode-option selected" id="modeStagedCard">
+            <input type="radio" name="mode" value="staged" checked />
+            <div>
+              <div class="mode-title">Staged High-Speed (aria2c 16x → Drive)</div>
+              <div class="mode-desc">Uses 16 parallel connections to VPS NVMe, extracts archives if enabled, then moves to Drive &amp; deletes local copy.</div>
+            </div>
+          </label>
+          <label class="mode-option" id="modeDirectCard">
+            <input type="radio" name="mode" value="direct" />
+            <div>
+              <div class="mode-title">Direct Stream (rclone copyurl)</div>
+              <div class="mode-desc">Streams straight to Drive in RAM without touching VPS disk. Single connection; cannot extract archives.</div>
+            </div>
+          </label>
+        </div>
+
+        <div class="toggles">
+          <label class="checkbox-label" id="autoExtractLabel">
+            <input type="checkbox" id="autoExtractInput" checked />
+            <span>Auto-extract archives (.zip, .7z, .tar.*, .rar) before upload</span>
+          </label>
+          <label class="checkbox-label" id="autoRefreshLabel" style="display:none">
+            <input type="checkbox" id="autoRefreshInput" checked />
+            <span>Auto-refresh Jellyfin / VFS on completion</span>
+          </label>
+        </div>
+
+        <details id="headersDetails">
+          <summary id="headersSummary">Custom HTTP Headers (optional — Referer, Cookie, User-Agent, etc.)</summary>
+          <div class="hint" id="headersDirectNote" style="display:none;margin-top:8px;">
+            Custom HTTP headers are only supported in Staged mode (rclone copyurl applies --header globally to Google Drive API requests).
+          </div>
+          <div class="headers-list" id="headersList"></div>
+          <button type="button" class="btn-sm" id="addHeaderBtn" style="margin-top:10px">
+            + Add Header
+          </button>
+        </details>
+
+        <div class="form-footer">
+          <span class="hint" id="queueHint"></span>
+          <button type="submit" class="btn-primary" id="submitBtn">Queue Download</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="card-header">
+        <h2>Transfer Queue &amp; History</h2>
+        <button type="button" class="btn-sm" id="clearFinishedBtn">Clear Finished</button>
+      </div>
+      <div class="job-list" id="jobList">
+        <div class="empty-state">No transfers yet. Paste a direct URL above to get started.</div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      config: null,
+      jobs: new Map(),
+      jobOrder: [],
+      folders: [],
+      subfolders: [],
+    };
+
+    const el = {
+      diskPill: document.getElementById('diskPill'),
+      sseDot: document.getElementById('sseDot'),
+      sseLabel: document.getElementById('sseLabel'),
+      jellyfinBtn: document.getElementById('jellyfinBtn'),
+      form: document.getElementById('downloadForm'),
+      formAlert: document.getElementById('formAlert'),
+      urlsInput: document.getElementById('urlsInput'),
+      urlCountHint: document.getElementById('urlCountHint'),
+      folderSelect: document.getElementById('folderSelect'),
+      subfolderSelect: document.getElementById('subfolderSelect'),
+      newSubfolderInput: document.getElementById('newSubfolderInput'),
+      customFilenameInput: document.getElementById('customFilenameInput'),
+      refreshFoldersBtn: document.getElementById('refreshFoldersBtn'),
+      destPreview: document.getElementById('destPreview'),
+      modeStagedCard: document.getElementById('modeStagedCard'),
+      modeDirectCard: document.getElementById('modeDirectCard'),
+      autoExtractInput: document.getElementById('autoExtractInput'),
+      autoExtractLabel: document.getElementById('autoExtractLabel'),
+      autoRefreshLabel: document.getElementById('autoRefreshLabel'),
+      autoRefreshInput: document.getElementById('autoRefreshInput'),
+      headersDetails: document.getElementById('headersDetails'),
+      headersSummary: document.getElementById('headersSummary'),
+      headersDirectNote: document.getElementById('headersDirectNote'),
+      headersList: document.getElementById('headersList'),
+      addHeaderBtn: document.getElementById('addHeaderBtn'),
+      queueHint: document.getElementById('queueHint'),
+      submitBtn: document.getElementById('submitBtn'),
+      clearFinishedBtn: document.getElementById('clearFinishedBtn'),
+      jobList: document.getElementById('jobList'),
+    };
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes || bytes <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const idx = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+      return `${(bytes / 1024 ** idx).toFixed(idx >= 2 ? 2 : 0)} ${units[idx]}`;
+    }
+
+    function formatSpeed(bps) {
+      if (!bps || bps <= 0) return '0 MB/s';
+      return `${(bps / (1024 * 1024)).toFixed(2)} MB/s`;
+    }
+
+    function formatEta(seconds) {
+      if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '--';
+      const s = Math.max(0, Math.round(seconds));
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const rem = s % 60;
+      if (h > 0) return `${h}h ${m}m ${rem}s`;
+      if (m > 0) return `${m}m ${rem}s`;
+      return `${rem}s`;
+    }
+
+    function showAlert(type, msg) {
+      if (!msg) {
+        el.formAlert.className = 'alert';
+        el.formAlert.textContent = '';
+        return;
+      }
+      el.formAlert.className = `alert ${type}`;
+      el.formAlert.textContent = msg;
+    }
+
+    function selectedMode() {
+      const checked = document.querySelector('input[name="mode"]:checked');
+      return checked ? checked.value : 'staged';
+    }
+
+    function getParsedUrls() {
+      return el.urlsInput.value
+        .split(/\r?\n/)
+        .map((u) => u.trim())
+        .filter(Boolean);
+    }
+
+    function updateUrlAndModeUI() {
+      const urls = getParsedUrls();
+      if (urls.length > 1) {
+        el.urlCountHint.textContent = `${urls.length} URLs queued as batch`;
+        el.customFilenameInput.disabled = true;
+        el.customFilenameInput.value = '';
+        el.customFilenameInput.placeholder = 'Disabled for multi-URL batches (uses auto-filenames)';
+        el.submitBtn.textContent = `Queue ${urls.length} Downloads`;
+      } else {
+        el.urlCountHint.textContent = 'Paste one or more direct URLs';
+        el.customFilenameInput.disabled = false;
+        el.customFilenameInput.placeholder = 'Leave empty to auto-detect from URL / Content-Disposition';
+        el.submitBtn.textContent = 'Queue Download';
+      }
+
+      const mode = selectedMode();
+      const isDirect = mode === 'direct';
+      el.modeStagedCard.classList.toggle('selected', mode === 'staged');
+      el.modeDirectCard.classList.toggle('selected', isDirect);
+
+      if (isDirect) {
+        el.autoExtractInput.disabled = true;
+        el.autoExtractLabel.classList.add('disabled');
+      } else {
+        el.autoExtractInput.disabled = false;
+        el.autoExtractLabel.classList.remove('disabled');
+      }
+
+      el.headersDetails.classList.toggle('disabled', isDirect);
+      el.headersSummary.textContent = isDirect
+        ? 'Custom HTTP Headers (disabled in Direct mode — Staged mode only)'
+        : 'Custom HTTP Headers (optional — Referer, Cookie, User-Agent, etc.)';
+      el.headersDirectNote.style.display = isDirect ? 'block' : 'none';
+      el.addHeaderBtn.disabled = isDirect;
+      for (const control of el.headersList.querySelectorAll('input, button')) {
+        control.disabled = isDirect;
+      }
+
+      updateDestPreview();
+    }
+
+    function updateDestPreview() {
+      const root = state.config?.rcloneRoot || 'gdrive:Media';
+      const folder = el.folderSelect.value;
+      const existingSub = el.subfolderSelect.value;
+      const newSub = el.newSubfolderInput.value.trim().replace(/^\/+|\/+$/g, '');
+      const customName = el.customFilenameInput.value.trim();
+      const parts = [folder, existingSub, newSub].filter(Boolean);
+      const pathStr = parts.length ? `${root}/${parts.join('/')}` : root;
+      const suffix = customName && !el.customFilenameInput.disabled ? `/${customName}` : '/';
+      el.destPreview.textContent = `Destination: ${pathStr}${suffix}`;
+    }
+
+    function addHeaderRow(name = '', value = '') {
+      const row = document.createElement('div');
+      row.className = 'header-row';
+      row.innerHTML = `
+        <input type="text" placeholder="Header Name (e.g. Referer)" class="hdr-name" value="${escapeHtml(name)}" />
+        <input type="text" placeholder="Header Value" class="hdr-val" value="${escapeHtml(value)}" />
+        <button type="button" class="btn-sm btn-danger">✕</button>
+      `;
+      row.querySelector('button').addEventListener('click', () => row.remove());
+      if (selectedMode() === 'direct') {
+        for (const control of row.querySelectorAll('input, button')) {
+          control.disabled = true;
+        }
+      }
+      el.headersList.appendChild(row);
+    }
+
+    async function loadConfig() {
+      try {
+        const res = await fetch('/api/config');
+        if (!res.ok) return;
+        const cfg = await res.json();
+        state.config = cfg;
+        const freeGb = cfg.disk?.freeBytes ? (cfg.disk.freeBytes / 1024 ** 3).toFixed(1) : '--';
+        el.diskPill.textContent = `VPS Disk: ${freeGb} GB free`;
+        el.queueHint.textContent = `Max ${cfg.maxConcurrentJobs} concurrent jobs`;
+
+        const hasMediaRefresh = cfg.jellyfinConfigured || cfg.rcloneRcConfigured;
+        el.jellyfinBtn.style.display = hasMediaRefresh ? 'inline-block' : 'none';
+        el.autoRefreshLabel.style.display = hasMediaRefresh ? 'inline-flex' : 'none';
+        updateDestPreview();
+      } catch {
+        // Ignore transient config errors
+      }
+    }
+
+    async function loadTopFolders(refresh = false) {
+      try {
+        const prev = el.folderSelect.value;
+        const res = await fetch(`/api/folders${refresh ? '?refresh=1' : ''}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load Drive folders');
+
+        state.folders = data.folders || [];
+        el.folderSelect.innerHTML = '';
+
+        if (state.folders.length === 0) {
+          el.folderSelect.innerHTML = '<option value="">No folders found</option>';
+          return;
+        }
+
+        for (const f of state.folders) {
+          const opt = document.createElement('option');
+          opt.value = f;
+          opt.textContent = f;
+          el.folderSelect.appendChild(opt);
+        }
+
+        if (prev && state.folders.includes(prev)) {
+          el.folderSelect.value = prev;
+        }
+        await loadSubfolders(refresh);
+      } catch (err) {
+        showAlert('error', `Could not list Drive folders: ${err.message}`);
+      }
+    }
+
+    async function loadSubfolders(refresh = false) {
+      const folder = el.folderSelect.value;
+      el.subfolderSelect.innerHTML = '<option value="">(None — root of folder)</option>';
+      if (!folder) {
+        updateDestPreview();
+        return;
+      }
+
+      try {
+        const qs = new URLSearchParams({ path: folder });
+        if (refresh) qs.set('refresh', '1');
+        const res = await fetch(`/api/folders?${qs.toString()}`);
+        const data = await res.json();
+        if (!res.ok) return;
+
+        for (const sub of data.folders || []) {
+          const opt = document.createElement('option');
+          opt.value = sub;
+          opt.textContent = sub;
+          el.subfolderSelect.appendChild(opt);
+        }
+      } finally {
+        updateDestPreview();
+      }
+    }
+
+    function setJobsSnapshot(jobs) {
+      state.jobs.clear();
+      state.jobOrder = [];
+      for (const job of jobs) {
+        state.jobs.set(job.id, job);
+        state.jobOrder.push(job.id);
+      }
+      renderJobs();
+    }
+
+    function upsertJob(job) {
+      const isNew = !state.jobs.has(job.id);
+      if (isNew) {
+        state.jobOrder.unshift(job.id);
+      }
+      state.jobs.set(job.id, job);
+
+      if (isNew) {
+        renderJobs();
+        return;
+      }
+
+      const card = Array.from(el.jobList.querySelectorAll('.job-card[data-job-id]'))
+        .find((node) => node.dataset.jobId === job.id);
+      if (card) {
+        patchJobCard(card, job);
+      } else {
+        renderJobs();
+      }
+    }
+
+    function setTextIfChanged(node, text) {
+      if (node.textContent !== text) {
+        node.textContent = text;
+      }
+    }
+
+    function createJobCard(job) {
+      const card = document.createElement('div');
+      card.className = 'job-card';
+      card.dataset.jobId = job.id;
+      card.innerHTML = `
+        <div class="job-top">
+          <div>
+            <div class="job-title"></div>
+            <div class="job-url"></div>
+          </div>
+          <div class="badges">
+            <span class="badge badge-mode"></span>
+            <span class="badge badge-status"></span>
+          </div>
+        </div>
+        <div class="job-dest"></div>
+        <div class="progress-wrap">
+          <div class="progress-bar"></div>
+        </div>
+        <div class="job-stats">
+          <span class="job-stats-text"></span>
+          <span class="job-created-at"></span>
+        </div>
+        <div class="job-error" style="display:none"></div>
+        <div class="job-actions">
+          <div class="action-btns"></div>
+        </div>
+        <details class="job-logs">
+          <summary></summary>
+          <pre></pre>
+        </details>
+      `;
+      card.querySelector('.job-logs').dataset.jobId = job.id;
+      patchJobCard(card, job);
+      return card;
+    }
+
+    function patchJobCard(card, job) {
+      const isActive =
+        job.status === 'queued' ||
+        job.status === 'downloading' ||
+        job.status === 'extracting' ||
+        job.status === 'uploading';
+      const isRetryable = job.status === 'failed' || job.status === 'cancelled';
+
+      const pct = job.progress?.percent ?? 0;
+      const barClass =
+        job.status === 'extracting'
+          ? 'progress-bar extracting'
+          : job.status === 'completed'
+            ? 'progress-bar completed'
+            : job.status === 'failed'
+              ? 'progress-bar failed'
+              : 'progress-bar';
+
+      const title = job.resolvedFilename || job.url;
+      const modeLabel = job.mode === 'direct' ? 'Direct' : 'Staged 16x';
+
+      let statsText = job.phaseLabel || '';
+      if (job.status === 'downloading' || job.status === 'uploading') {
+        const done = formatBytes(job.progress.bytesDone);
+        const total = job.progress.bytesTotal > 0 ? formatBytes(job.progress.bytesTotal) : '?';
+        const speed = formatSpeed(job.progress.speedBytesPerSec);
+        const eta = formatEta(job.progress.etaSeconds);
+        statsText = `${job.phaseLabel} — ${pct}% (${done} / ${total}) • ${speed} • ETA ${eta}`;
+      }
+
+      setTextIfChanged(card.querySelector('.job-title'), title);
+      setTextIfChanged(card.querySelector('.job-url'), job.url || '');
+      setTextIfChanged(card.querySelector('.badge-mode'), modeLabel);
+
+      const statusBadge = card.querySelector('.badge-status');
+      const safeStatus = String(job.status || '').replace(/[^a-z0-9_-]/gi, '');
+      const nextBadgeClass = `badge badge-status badge-${safeStatus}`;
+      if (statusBadge.className !== nextBadgeClass) {
+        statusBadge.className = nextBadgeClass;
+      }
+      setTextIfChanged(statusBadge, job.status || '');
+
+      setTextIfChanged(card.querySelector('.job-dest'), `→ ${job.destinationRemote || ''}`);
+
+      const bar = card.querySelector('.progress-bar');
+      if (bar.className !== barClass) {
+        bar.className = barClass;
+      }
+      const nextWidth = `${job.status === 'extracting' ? 100 : pct}%`;
+      if (bar.style.width !== nextWidth) {
+        bar.style.width = nextWidth;
+      }
+
+      setTextIfChanged(card.querySelector('.job-stats-text'), statsText);
+      setTextIfChanged(card.querySelector('.job-created-at'), new Date(job.createdAt).toLocaleTimeString());
+
+      const errEl = card.querySelector('.job-error');
+      if (job.error) {
+        if (errEl.style.display !== 'block') errEl.style.display = 'block';
+        setTextIfChanged(errEl, job.error);
+      } else {
+        if (errEl.style.display !== 'none') errEl.style.display = 'none';
+        setTextIfChanged(errEl, '');
+      }
+
+      const actionKey = `${isActive ? '1' : '0'}:${isRetryable ? '1' : '0'}`;
+      const actionBtns = card.querySelector('.action-btns');
+      if (actionBtns.dataset.actionKey !== actionKey) {
+        actionBtns.dataset.actionKey = actionKey;
+        actionBtns.textContent = '';
+        if (isActive) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn-sm btn-danger';
+          btn.dataset.action = 'cancel';
+          btn.dataset.id = job.id;
+          btn.textContent = 'Cancel';
+          actionBtns.appendChild(btn);
+        }
+        if (isRetryable) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn-sm';
+          btn.dataset.action = 'retry';
+          btn.dataset.id = job.id;
+          btn.textContent = 'Retry';
+          actionBtns.appendChild(btn);
+        }
+        if (!isActive) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn-sm btn-danger';
+          btn.dataset.action = 'delete';
+          btn.dataset.id = job.id;
+          btn.textContent = 'Remove';
+          actionBtns.appendChild(btn);
+        }
+      }
+
+      const logs = job.logs || [];
+      const details = card.querySelector('.job-logs');
+      setTextIfChanged(details.querySelector('summary'), `Logs (${logs.length})`);
+      const pre = details.querySelector('pre');
+      const nextLogs = logs.join('\n');
+      const currentLogs = pre.textContent || '';
+      if (currentLogs !== nextLogs) {
+        const wasAtBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight <= 8;
+        const prevScrollTop = pre.scrollTop;
+        if (currentLogs.length > 0 && nextLogs.startsWith(currentLogs)) {
+          pre.appendChild(document.createTextNode(nextLogs.slice(currentLogs.length)));
+        } else {
+          pre.textContent = nextLogs;
+        }
+        pre.scrollTop = wasAtBottom ? pre.scrollHeight : prevScrollTop;
+      }
+    }
+
+    function renderJobs() {
+      if (state.jobOrder.length === 0) {
+        el.jobList.innerHTML = '<div class="empty-state">No transfers yet. Paste a direct URL above to get started.</div>';
+        return;
+      }
+
+      const emptyState = el.jobList.querySelector('.empty-state');
+      if (emptyState) emptyState.remove();
+
+      const existingCards = new Map();
+      for (const card of el.jobList.querySelectorAll('.job-card[data-job-id]')) {
+        const cardId = card.dataset.jobId;
+        if (!state.jobs.has(cardId)) {
+          card.remove();
+        } else {
+          existingCards.set(cardId, card);
+        }
+      }
+
+      state.jobOrder.forEach((id, idx) => {
+        const job = state.jobs.get(id);
+        if (!job) return;
+        let card = existingCards.get(id);
+        if (!card) {
+          card = createJobCard(job);
+        } else {
+          patchJobCard(card, job);
+        }
+        const currentAtIdx = el.jobList.children[idx] || null;
+        if (currentAtIdx !== card) {
+          el.jobList.insertBefore(card, currentAtIdx);
+        }
+      });
+    }
+
+    el.jobList.addEventListener('click', async (event) => {
+      const btn = event.target.closest('button[data-action]');
+      if (!btn) return;
+      const { action, id } = btn.dataset;
+      btn.disabled = true;
+
+      try {
+        let res;
+        if (action === 'cancel') {
+          res = await fetch(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+        } else if (action === 'retry') {
+          res = await fetch(`/api/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' });
+        } else if (action === 'delete') {
+          res = await fetch(`/api/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        }
+        if (res && !res.ok) {
+          let errMsg = `Action failed (HTTP ${res.status})`;
+          const text = await res.text();
+          if (text) {
+            try {
+              const parsed = JSON.parse(text);
+              errMsg = parsed.error || text;
+            } catch {
+              errMsg = text;
+            }
+          }
+          throw new Error(errMsg);
+        }
+      } catch (err) {
+        showAlert('error', err.message || 'Action failed');
+      } finally {
+        if (btn.isConnected) {
+          btn.disabled = false;
+        }
+      }
+    });
+
+    el.form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      showAlert('', '');
+
+      const urls = getParsedUrls();
+      if (urls.length === 0) {
+        showAlert('error', 'Please paste at least one http:// or https:// URL.');
+        return;
+      }
+
+      const headers = [];
+      if (selectedMode() !== 'direct') {
+        for (const row of el.headersList.querySelectorAll('.header-row')) {
+          const name = row.querySelector('.hdr-name').value.trim();
+          const value = row.querySelector('.hdr-val').value.trim();
+          if (name || value) headers.push({ name, value });
+        }
+      }
+
+      const payload = {
+        urls,
+        folder: el.folderSelect.value,
+        existingSubfolder: el.subfolderSelect.value,
+        newSubfolder: el.newSubfolderInput.value.trim(),
+        customFilename: el.customFilenameInput.disabled ? '' : el.customFilenameInput.value.trim(),
+        mode: selectedMode(),
+        autoExtract: el.autoExtractInput.checked,
+        autoRefreshJellyfin: el.autoRefreshInput.checked,
+        headers,
+      };
+
+      el.submitBtn.disabled = true;
+      try {
+        const res = await fetch('/api/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to queue job');
+
+        el.urlsInput.value = '';
+        el.customFilenameInput.value = '';
+        updateUrlAndModeUI();
+        showAlert('ok', `Queued ${data.jobs.length} transfer(s).`);
+        setTimeout(() => showAlert('', ''), 4000);
+      } catch (err) {
+        showAlert('error', err.message);
+      } finally {
+        el.submitBtn.disabled = false;
+      }
+    });
+
+    el.clearFinishedBtn.addEventListener('click', async () => {
+      await fetch('/api/jobs', { method: 'DELETE' });
+    });
+
+    el.jellyfinBtn.addEventListener('click', async () => {
+      el.jellyfinBtn.disabled = true;
+      try {
+        const res = await fetch('/api/jellyfin/refresh', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Refresh failed');
+        showAlert('ok', (data.messages || ['Media refresh triggered']).join(' • '));
+        setTimeout(() => showAlert('', ''), 4000);
+      } catch (err) {
+        showAlert('error', err.message);
+      } finally {
+        el.jellyfinBtn.disabled = false;
+      }
+    });
+
+    el.urlsInput.addEventListener('input', updateUrlAndModeUI);
+    el.folderSelect.addEventListener('change', () => loadSubfolders(false));
+    el.subfolderSelect.addEventListener('change', updateDestPreview);
+    el.newSubfolderInput.addEventListener('input', updateDestPreview);
+    el.customFilenameInput.addEventListener('input', updateDestPreview);
+    el.refreshFoldersBtn.addEventListener('click', () => loadTopFolders(true));
+    el.addHeaderBtn.addEventListener('click', () => addHeaderRow());
+    for (const radio of document.querySelectorAll('input[name="mode"]')) {
+      radio.addEventListener('change', updateUrlAndModeUI);
+    }
+
+    let pollTimer = null;
+    function startFallbackPolling() {
+      if (pollTimer) return;
+      pollTimer = setInterval(async () => {
+        try {
+          const res = await fetch('/api/jobs');
+          if (res.ok) {
+            const data = await res.json();
+            setJobsSnapshot(data.jobs || []);
+          }
+        } catch {
+          // ignore
+        }
+      }, 3000);
+    }
+
+    function stopFallbackPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    function connectEvents() {
+      const es = new EventSource('/api/events');
+
+      es.onopen = () => {
+        el.sseDot.className = 'dot live';
+        el.sseLabel.textContent = 'Live';
+        stopFallbackPolling();
+      };
+
+      es.addEventListener('snapshot', (event) => {
+        setJobsSnapshot(JSON.parse(event.data));
+      });
+
+      es.addEventListener('job', (event) => {
+        const job = JSON.parse(event.data);
+        upsertJob(job);
+        if (job.status === 'completed') {
+          loadConfig();
+        }
+      });
+
+      es.onerror = () => {
+        el.sseDot.className = 'dot off';
+        el.sseLabel.textContent = 'Reconnecting...';
+        startFallbackPolling();
+      };
+    }
+
+    (async function boot() {
+      updateUrlAndModeUI();
+      await Promise.all([loadConfig(), loadTopFolders(false)]);
+      connectEvents();
+      setInterval(loadConfig, 30_000);
+    })();
+  </script>
+</body>
+</html>

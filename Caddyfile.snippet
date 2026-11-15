@@ -1,0 +1,19 @@
+# Append this block to your Caddyfile (e.g. /path/to/Caddyfile).
+# If terminating TLS upstream (e.g. via a tunnel forwarding to Caddy on http://localhost:80),
+# listen on :80 for your hostname and protect it with basic_auth.
+#
+# Generate the bcrypt password hash on your server (never commit the hash or password to git):
+#   docker exec -it caddy caddy hash-password
+
+http://downloader.example.com {
+	basic_auth {
+		# Replace <username> and <bcrypt_hash> with your chosen username and the output of `caddy hash-password`
+		admin $2a$14$REPLACE_WITH_OUTPUT_FROM_CADDY_HASH_PASSWORD
+	}
+
+	reverse_proxy drive-downloader:3000 {
+		# Disable response buffering so Server-Sent Events (/api/events) stream in real time
+		flush_interval -1
+		header_up X-Forwarded-Proto https
+	}
+}

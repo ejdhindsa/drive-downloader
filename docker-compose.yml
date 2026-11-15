@@ -1,0 +1,29 @@
+services:
+  drive-downloader:
+    build: .
+    container_name: drive-downloader
+    init: true
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    env_file:
+      - .env
+    environment:
+      - TZ=${TZ:-UTC}
+      - PORT=3000
+      - HOST=0.0.0.0
+      - RCLONE_CONFIG=/config/rclone/rclone.conf
+      - STAGING_DIR=/tmp/staging
+      - DATA_DIR=/app/data
+      - HOME=/tmp
+    volumes:
+      - ${RCLONE_HOST_CONFIG_DIR:-./rclone-config}:/config/rclone
+      - ./data:/app/data
+      - ./staging:/tmp/staging
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - edge
+
+networks:
+  edge:
+    external: true
