@@ -1,6 +1,8 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
-import type { CustomHeader } from './types';
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import { MIB, REDACTED_VALUE } from './consts';
+import type { CustomHeader, Job } from './types';
 
 const BLOCKED_HOSTNAMES = new Set([
   'localhost',
@@ -10,6 +12,21 @@ const BLOCKED_HOSTNAMES = new Set([
 ]);
 
 const BLOCKED_HOST_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa'];
+
+const REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
+
+const SENSITIVE_HEADER_PATTERN = /(authorization|cookie|token|secret|api[-_]?key|password|session)/i;
+
+const proxyAgents = new Map<string, ProxyAgent>();
+
+function getProxyAgent(proxyUrl: string): ProxyAgent {
+  let agent = proxyAgents.get(proxyUrl);
+  if (!agent) {
+    agent = new ProxyAgent(proxyUrl);
+    proxyAgents.set(proxyUrl, agent);
+  }
+  return agent;
+}
 
 function ipv4ToInt(ip: string): number | null {
   const parts = ip.split('.');
@@ -62,7 +79,7 @@ export function isPrivateOrReservedIp(rawIp: string): boolean {
     return true;
   }
 
-  // IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1)
+  // Handle both dotted-quad (::ffff:127.0.0.1) and hex (::ffff:7f00:1) IPv4-mapped forms.
   if (ip.startsWith('::ffff:')) {
     const rest = ip.slice('::ffff:'.length);
     if (net.isIPv4(rest)) {
@@ -80,22 +97,19 @@ export function isPrivateOrReservedIp(rawIp: string): boolean {
   }
 
   if (ip === '::' || ip === '::1') return true;
-  // Unique local addresses (fc00::/7) -> fc.. or fd..
   if (ip.startsWith('fc') || ip.startsWith('fd')) return true;
-  // Link-local (fe80::/10) -> fe80..febf
   if (/^fe[89ab]/.test(ip)) return true;
-  // Multicast (ff00::/8)
   if (ip.startsWith('ff')) return true;
-  // Documentation (2001:db8::/32)
   if (ip.startsWith('2001:db8:')) return true;
 
   return false;
 }
 
+export type DnsLookupFn = (host: string) => Promise<Array<{ address: string }>>;
+
 export async function validatePublicUrl(
   rawUrl: string,
-  lookupFn: (host: string) => Promise<Array<{ address: string }>> = (host) =>
-    dns.lookup(host, { all: true, verbatim: true }),
+  lookupFn: DnsLookupFn = (host) => dns.lookup(host, { all: true, verbatim: true }),
 ): Promise<URL> {
   const trimmed = rawUrl.trim();
   if (!trimmed) {
@@ -150,6 +164,46 @@ export async function validatePublicUrl(
   }
 
   return parsed;
+}
+
+export function validateProxyUrl(rawProxy: string | undefined): string {
+  const trimmed = rawProxy?.trim() ?? '';
+  if (!trimmed) return '';
+  if (/[\s\r\n\0]/.test(trimmed)) {
+    throw new Error('DOWNLOAD_PROXY contains invalid whitespace or control characters');
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`Invalid DOWNLOAD_PROXY URL: ${trimmed}`);
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(
+      `Unsupported DOWNLOAD_PROXY protocol "${parsed.protocol}". Use an http:// or https:// proxy (aria2c and undici do not support native socks5).`,
+    );
+  }
+  if (!parsed.hostname) {
+    throw new Error('DOWNLOAD_PROXY must include a hostname');
+  }
+
+  return parsed.toString().replace(/\/$/, '');
+}
+
+export function redactProxyUrl(proxyUrl: string): string {
+  if (!proxyUrl) return '';
+  try {
+    const parsed = new URL(proxyUrl);
+    if (parsed.username || parsed.password) {
+      parsed.username = '***';
+      parsed.password = '***';
+    }
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return '[invalid-proxy]';
+  }
 }
 
 function validatePathSegment(segment: string): string {
@@ -212,4 +266,177 @@ export function sanitizeHeaders(headers: CustomHeader[] | undefined): CustomHead
     cleaned.push({ name, value });
   }
   return cleaned;
+}
+
+export function isSensitiveHeaderName(name: string): boolean {
+  return SENSITIVE_HEADER_PATTERN.test(name.trim());
+}
+
+export function redactHeaders(headers: CustomHeader[] | undefined): CustomHeader[] {
+  if (!headers || headers.length === 0) return [];
+  return headers.map((h) => ({
+    name: h.name,
+    value: isSensitiveHeaderName(h.name) ? REDACTED_VALUE : h.value,
+  }));
+}
+
+export function redactJobForOutput(job: Job): Job {
+  return {
+    ...job,
+    headers: redactHeaders(job.headers),
+  };
+}
+
+export interface SafeFetchOptions {
+  method?: string;
+  headers?: CustomHeader[] | Record<string, string>;
+  signal?: AbortSignal;
+  maxRedirects?: number;
+  timeoutMs?: number;
+  proxyUrl?: string;
+  lookupFn?: DnsLookupFn;
+  fetchFn?: typeof fetch;
+}
+
+export interface SafeFetchResult {
+  response: Response;
+  finalUrl: string;
+  redirectCount: number;
+}
+
+function buildRequestHeaders(input?: CustomHeader[] | Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!input) return out;
+  if (Array.isArray(input)) {
+    for (const h of input) {
+      out[h.name] = h.value;
+    }
+    return out;
+  }
+  return { ...input };
+}
+
+function stripCrossOriginSensitiveHeaders(headers: Record<string, string>): Record<string, string> {
+  const next: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (!isSensitiveHeaderName(k)) {
+      next[k] = v;
+    }
+  }
+  return next;
+}
+
+export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Promise<SafeFetchResult> {
+  const maxRedirects = opts.maxRedirects ?? 10;
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+  const method = opts.method ?? 'GET';
+  let currentUrl = (await validatePublicUrl(rawUrl, opts.lookupFn)).toString();
+  let currentHeaders = buildRequestHeaders(opts.headers);
+
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const combinedSignal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal;
+
+  for (let redirects = 0; redirects <= maxRedirects; redirects += 1) {
+    let response: Response;
+    const init: RequestInit = {
+      method,
+      headers: currentHeaders,
+      redirect: 'manual',
+      signal: combinedSignal,
+    };
+
+    if (opts.fetchFn) {
+      response = await opts.fetchFn(currentUrl, init);
+    } else if (opts.proxyUrl) {
+      response = (await undiciFetch(currentUrl, {
+        ...(init as Parameters<typeof undiciFetch>[1]),
+        dispatcher: getProxyAgent(opts.proxyUrl),
+      })) as unknown as Response;
+    } else {
+      response = await fetch(currentUrl, init);
+    }
+
+    const location = response.headers.get('location');
+    if (REDIRECT_STATUS_CODES.has(response.status) && location) {
+      await response.body?.cancel().catch(() => {});
+
+      if (redirects === maxRedirects) {
+        throw new Error(`Too many redirects (exceeded ${maxRedirects})`);
+      }
+
+      const prevOrigin = new URL(currentUrl).origin;
+      const nextUrl = new URL(location, currentUrl).toString();
+      const validated = await validatePublicUrl(nextUrl, opts.lookupFn);
+
+      if (validated.origin !== prevOrigin) {
+        currentHeaders = stripCrossOriginSensitiveHeaders(currentHeaders);
+      }
+
+      currentUrl = validated.toString();
+      continue;
+    }
+
+    return {
+      response,
+      finalUrl: currentUrl,
+      redirectCount: redirects,
+    };
+  }
+
+  throw new Error(`Too many redirects (exceeded ${maxRedirects})`);
+}
+
+export async function resolveSafeUrl(
+  rawUrl: string,
+  opts: Omit<SafeFetchOptions, 'method'> = {},
+): Promise<string> {
+  const head = await safeFetch(rawUrl, { ...opts, method: 'HEAD' });
+  await head.response.body?.cancel().catch(() => {});
+
+  // Some presigned hosts reject HEAD with 403/405/501; fall back to a 1-byte GET probe
+  // so redirects on GET-only endpoints still pass SSRF validation.
+  if (head.response.status === 403 || head.response.status === 405 || head.response.status === 501) {
+    const extraHeaders = { ...buildRequestHeaders(opts.headers), Range: 'bytes=0-0' };
+    const probe = await safeFetch(head.finalUrl, { ...opts, method: 'GET', headers: extraHeaders });
+    await probe.response.body?.cancel().catch(() => {});
+    return probe.finalUrl;
+  }
+
+  return head.finalUrl;
+}
+
+export async function readBoundedText(
+  response: Response,
+  maxBytes = 5 * MIB,
+): Promise<string> {
+  const contentLength = Number.parseInt(response.headers.get('content-length') ?? '', 10);
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error(`Response body exceeds maximum allowed size (${maxBytes} bytes)`);
+  }
+
+  if (!response.body) {
+    return '';
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new Error(`Response body exceeds maximum allowed size (${maxBytes} bytes)`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return Buffer.concat(chunks).toString('utf8');
 }

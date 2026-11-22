@@ -2,9 +2,28 @@ import { spawn } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {
+  DEFAULT_MAX_COMPRESSION_RATIO,
+  DEFAULT_MAX_EXTRACT_BYTES,
+  GIB,
+  MIB,
+  RATIO_CHECK_MIN_BYTES,
+} from './consts';
 import { attachAbortKill } from './process';
 
 export type ArchiveFormat = 'zip' | '7z' | 'rar' | 'tar';
+
+export interface ArchiveEntryInfo {
+  path: string;
+  sizeBytes: number;
+}
+
+export interface ArchiveExtractionLimits {
+  maxExtractBytes: number;
+  freeDiskBytes?: number;
+  minFreeDiskBytes?: number;
+  maxCompressionRatio?: number;
+}
 
 export function detectArchiveFormat(filename: string): ArchiveFormat | null {
   const lower = filename.toLowerCase();
@@ -25,10 +44,6 @@ export function detectArchiveFormat(filename: string): ArchiveFormat | null {
   return null;
 }
 
-/**
- * Resolves the first executable binary from `candidates` found on `pathEnv`.
- * Throws a clear error if none are installed.
- */
 export async function resolveBinary(
   candidates: string[],
   pathEnv = process.env.PATH || '',
@@ -43,7 +58,7 @@ export async function resolveBinary(
         await fs.access(fullPath, fsConstants.X_OK);
         return fullPath;
       } catch {
-        // Continue searching PATH
+        continue;
       }
     }
   }
@@ -52,9 +67,6 @@ export async function resolveBinary(
   );
 }
 
-/**
- * Resolves `7zz` (Alpine 7zip package) or `7z` from PATH.
- */
 export async function resolve7zBinary(pathEnv = process.env.PATH || ''): Promise<string> {
   return resolveBinary(['7zz', '7z'], pathEnv);
 }
@@ -104,10 +116,239 @@ function runCommand(
   });
 }
 
-/**
- * Normalizes permissions on extracted files/directories and removes symlinks and
- * special files (FIFOs, sockets, device nodes) before upload.
- */
+function runCommandCapture(
+  cmd: string,
+  args: string[],
+  signal: AbortSignal,
+  maxBytes = 8 * MIB,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error('Cancelled'));
+      return;
+    }
+
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const abortHandle = attachAbortKill(child, signal);
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let overflowed = false;
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBytes += chunk.byteLength;
+      if (stdoutBytes > maxBytes) {
+        overflowed = true;
+        child.kill('SIGKILL');
+        return;
+      }
+      stdoutChunks.push(chunk);
+    });
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (stderrChunks.length < 32) {
+        stderrChunks.push(chunk);
+      }
+    });
+
+    child.on('error', (err) => {
+      abortHandle.cleanup();
+      reject(err);
+    });
+
+    child.on('close', (code) => {
+      abortHandle.cleanup();
+      if (abortHandle.wasAborted() || signal.aborted) {
+        reject(new Error('Cancelled'));
+        return;
+      }
+      if (overflowed) {
+        reject(new Error(`Archive listing exceeded ${maxBytes} bytes (too many entries)`));
+        return;
+      }
+      if (code === 0) {
+        resolve(Buffer.concat(stdoutChunks).toString('utf8'));
+      } else {
+        const errTail = Buffer.concat(stderrChunks).toString('utf8').trim();
+        reject(new Error(errTail || `${cmd} exited with code ${code ?? 'unknown'}`));
+      }
+    });
+  });
+}
+
+export function parse7zListing(output: string): ArchiveEntryInfo[] {
+  const markerIndex = output.indexOf('----------');
+  if (markerIndex === -1) return [];
+
+  const body = output.slice(markerIndex + '----------'.length);
+  const blocks = body.split(/\r?\n\r?\n/);
+  const entries: ArchiveEntryInfo[] = [];
+
+  for (const block of blocks) {
+    let entryPath = '';
+    let sizeBytes = 0;
+
+    for (const rawLine of block.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (line.startsWith('Path = ')) {
+        entryPath = line.slice('Path = '.length);
+      } else if (line.startsWith('Size = ')) {
+        const parsed = Number.parseInt(line.slice('Size = '.length), 10);
+        if (Number.isFinite(parsed) && parsed >= 0) {
+          sizeBytes = parsed;
+        }
+      }
+    }
+
+    if (entryPath) {
+      entries.push({ path: entryPath, sizeBytes });
+    }
+  }
+
+  return entries;
+}
+
+export function parseUnzipListing(output: string): ArchiveEntryInfo[] {
+  const entries: ArchiveEntryInfo[] = [];
+  const lineRegex = /^\s*(\d+)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+(.+)$/;
+  const altDateRegex = /^\s*(\d+)\s+\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}\s+(.+)$/;
+
+  for (const rawLine of output.split(/\r?\n/)) {
+    const match = rawLine.match(lineRegex) ?? rawLine.match(altDateRegex);
+    if (!match) continue;
+    const sizeBytes = Number.parseInt(match[1], 10);
+    const entryPath = match[2].trim();
+    if (Number.isFinite(sizeBytes) && entryPath) {
+      entries.push({ path: entryPath, sizeBytes });
+    }
+  }
+
+  return entries;
+}
+
+export function parseTarListing(output: string): ArchiveEntryInfo[] {
+  const entries: ArchiveEntryInfo[] = [];
+  // Matches both GNU/BusyBox (`perms owner/group size YYYY-MM-DD HH:MM path`)
+  // and BSD (`perms links owner group size Mon DD HH:MM path`).
+  const gnuRegex = /^[bcdlps-][rwxstST-]{9}\S*\s+\S+\s+(\d+)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+(.+)$/;
+  const bsdRegex = /^[bcdlps-][rwxstST-]{9}\S*\s+\d+\s+\S+\s+\S+\s+(\d+)\s+[A-Za-z]{3}\s+\d{1,2}\s+(?:\d{2}:\d{2}|\d{4})\s+(.+)$/;
+
+  for (const rawLine of output.split(/\r?\n/)) {
+    const match = rawLine.match(gnuRegex) ?? rawLine.match(bsdRegex);
+    if (!match) continue;
+    const sizeBytes = Number.parseInt(match[1], 10);
+    const entryPath = match[2].split(' -> ')[0].trim();
+    if (Number.isFinite(sizeBytes) && entryPath) {
+      entries.push({ path: entryPath, sizeBytes });
+    }
+  }
+
+  return entries;
+}
+
+function isUnsafeArchiveEntryPath(entryPath: string): boolean {
+  if (!entryPath) return false;
+  if (entryPath.includes('\0')) return true;
+  if (entryPath.startsWith('/') || entryPath.startsWith('\\')) return true;
+  if (/^[A-Za-z]:/.test(entryPath)) return true;
+
+  const segments = entryPath.split(/[/\\]+/);
+  return segments.some((seg) => seg === '..');
+}
+
+export function validateArchivePreflight(opts: {
+  entries: ArchiveEntryInfo[];
+  archiveSizeBytes: number;
+  limits: ArchiveExtractionLimits;
+}): { totalUncompressedBytes: number; entryCount: number } {
+  let totalUncompressedBytes = 0;
+
+  for (const entry of opts.entries) {
+    if (isUnsafeArchiveEntryPath(entry.path)) {
+      throw new Error(`Archive contains unsafe entry path: "${entry.path}"`);
+    }
+    totalUncompressedBytes += Math.max(0, entry.sizeBytes);
+  }
+
+  // Check real available disk headroom before the static ceiling so tight disks report accurately.
+  if (opts.limits.freeDiskBytes !== undefined) {
+    const reserve = opts.limits.minFreeDiskBytes ?? 0;
+    const availableForExtract = Math.max(0, opts.limits.freeDiskBytes - reserve);
+    if (totalUncompressedBytes > availableForExtract) {
+      const needGb = (totalUncompressedBytes / GIB).toFixed(2);
+      const availGb = (availableForExtract / GIB).toFixed(2);
+      throw new Error(
+        `Insufficient disk space to extract archive (needs ${needGb} GB, only ${availGb} GB available above reserve)`,
+      );
+    }
+  }
+
+  const maxExtractBytes = opts.limits.maxExtractBytes;
+  if (totalUncompressedBytes > maxExtractBytes) {
+    const totalGb = (totalUncompressedBytes / GIB).toFixed(2);
+    const capGb = (maxExtractBytes / GIB).toFixed(1);
+    throw new Error(
+      `Archive uncompressed size (${totalGb} GB) exceeds maximum allowed limit (${capGb} GB)`,
+    );
+  }
+
+  const maxRatio = opts.limits.maxCompressionRatio ?? DEFAULT_MAX_COMPRESSION_RATIO;
+  if (
+    opts.archiveSizeBytes > 0 &&
+    totalUncompressedBytes > RATIO_CHECK_MIN_BYTES &&
+    totalUncompressedBytes / opts.archiveSizeBytes > maxRatio
+  ) {
+    const ratio = Math.round(totalUncompressedBytes / opts.archiveSizeBytes);
+    throw new Error(
+      `Refusing to extract suspected archive bomb (compression ratio ${ratio}:1 exceeds ${maxRatio}:1 limit)`,
+    );
+  }
+
+  return {
+    totalUncompressedBytes,
+    entryCount: opts.entries.length,
+  };
+}
+
+async function inspectArchiveEntries(
+  archivePath: string,
+  format: ArchiveFormat,
+  signal: AbortSignal,
+): Promise<ArchiveEntryInfo[]> {
+  if (format === 'tar') {
+    const output = await runCommandCapture('tar', ['-tvf', archivePath], signal);
+    return parseTarListing(output);
+  }
+
+  if (format === 'zip') {
+    try {
+      const bin7z = await resolve7zBinary();
+      const output = await runCommandCapture(bin7z, ['l', '-slt', archivePath], signal);
+      return parse7zListing(output);
+    } catch (err) {
+      if (signal.aborted) throw err;
+      const output = await runCommandCapture('unzip', ['-l', archivePath], signal);
+      return parseUnzipListing(output);
+    }
+  }
+
+  if (format === 'rar') {
+    try {
+      const output = await runCommandCapture('bsdtar', ['-tvf', archivePath], signal);
+      return parseTarListing(output);
+    } catch (err) {
+      if (signal.aborted) throw err;
+      const bin7z = await resolve7zBinary();
+      const output = await runCommandCapture(bin7z, ['l', '-slt', archivePath], signal);
+      return parse7zListing(output);
+    }
+  }
+
+  const bin7z = await resolve7zBinary();
+  const output = await runCommandCapture(bin7z, ['l', '-slt', archivePath], signal);
+  return parse7zListing(output);
+}
+
 export async function sanitizeExtractedTree(
   rootDir: string,
   onLog: (line: string) => void,
@@ -155,11 +396,23 @@ export async function extractArchive(
   destDir: string,
   signal: AbortSignal,
   onLog: (line: string) => void,
+  limits: ArchiveExtractionLimits = { maxExtractBytes: DEFAULT_MAX_EXTRACT_BYTES },
 ): Promise<void> {
   const format = detectArchiveFormat(archivePath);
   if (!format) {
     throw new Error(`Unsupported archive format: ${path.basename(archivePath)}`);
   }
+
+  const stat = await fs.stat(archivePath);
+  const entries = await inspectArchiveEntries(archivePath, format, signal);
+  const preflight = validateArchivePreflight({
+    entries,
+    archiveSizeBytes: stat.size,
+    limits,
+  });
+  onLog(
+    `Preflight passed: ${preflight.entryCount} entry(s), ${(preflight.totalUncompressedBytes / MIB).toFixed(1)} MB uncompressed`,
+  );
 
   await fs.mkdir(destDir, { recursive: true });
 

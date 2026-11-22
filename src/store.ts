@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { redactJobForOutput } from './security';
 import type { Job } from './types';
 
 export const MAX_FINISHED_JOBS = 200;
@@ -110,7 +111,7 @@ export class JobStore {
   }
 
   save(jobs: Job[]): Promise<void> {
-    const trimmed = trimJobHistory(jobs);
+    const trimmed = trimJobHistory(jobs).map(redactJobForOutput);
     const payload = JSON.stringify(trimmed, null, 2);
     this.writeChain = this.writeChain
       .then(async () => {

@@ -4,11 +4,16 @@ import EventEmitter from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AppConfig } from './config';
+import { GIB, MIB, REDACTED_VALUE } from './consts';
 import { detectArchiveFormat, extractArchive } from './extractor';
 import { refreshMediaTargets } from './jellyfin';
 import { attachAbortKill } from './process';
 import { assertNoSkippedFiles, runRcloneCopyUrl, runRcloneMove } from './rclone';
 import {
+  redactHeaders,
+  redactJobForOutput,
+  redactProxyUrl,
+  resolveSafeUrl,
   sanitizeFilename,
   sanitizeFolderName,
   sanitizeHeaders,
@@ -23,6 +28,7 @@ import {
 } from './store';
 import type {
   CreateJobsRequest,
+  CustomHeader,
   DiskStatus,
   Job,
   JobProgress,
@@ -37,9 +43,9 @@ function parseSizeToBytes(rawValue: string, unit: string): number {
     case 'KiB':
       return Math.round(num * 1024);
     case 'MiB':
-      return Math.round(num * 1024 ** 2);
+      return Math.round(num * MIB);
     case 'GiB':
-      return Math.round(num * 1024 ** 3);
+      return Math.round(num * GIB);
     case 'TiB':
       return Math.round(num * 1024 ** 4);
     case 'KB':
@@ -71,7 +77,6 @@ function parseEtaToSeconds(rawEta: string): number | null {
 }
 
 export function parseAria2ProgressLine(line: string): JobProgress | null {
-  // Example: [#1a2b3c 45MiB/100MiB(45%) CN:16 DL:12.5MiB ETA:4s]
   const match = line.match(
     /([\d.]+)(TiB|GiB|MiB|KiB|GB|MB|KB|B)\/([\d.]+)(TiB|GiB|MiB|KiB|GB|MB|KB|B)\((\d+)%\).*?DL:([\d.]+)(TiB|GiB|MiB|KiB|GB|MB|KB|B)(?:.*?ETA:([0-9dhms]+))?/,
   );
@@ -116,6 +121,7 @@ function guessNameFromUrl(rawUrl: string): string {
 export function buildAria2Args(
   job: Pick<Job, 'url' | 'customFilename' | 'headers'>,
   stagingDir: string,
+  proxyUrl?: string,
 ): string[] {
   const args = [
     `--dir=${stagingDir}`,
@@ -140,6 +146,9 @@ export function buildAria2Args(
     '--seed-time=0',
   ];
 
+  if (proxyUrl) {
+    args.push(`--all-proxy=${proxyUrl}`);
+  }
   if (job.customFilename) {
     args.push(`--out=${job.customFilename}`);
   }
@@ -157,6 +166,8 @@ export class JobQueueManager extends EventEmitter {
   private readonly activeControllers = new Map<string, AbortController>();
   private readonly activeRuns = new Set<Promise<void>>();
   private readonly lastEmitAt = new Map<string, number>();
+  // Keep raw sensitive headers in memory only; job.headers always holds redacted copies.
+  private readonly liveHeaders = new Map<string, CustomHeader[]>();
   private shuttingDown = false;
 
   constructor(config: AppConfig, store: JobStore) {
@@ -167,14 +178,19 @@ export class JobQueueManager extends EventEmitter {
 
   async init(): Promise<void> {
     await verifyWritableDirectory(this.config.stagingDir, 'STAGING_DIR');
-    this.jobs = await this.store.init();
+    this.jobs = (await this.store.init()).map(redactJobForOutput);
   }
 
   listJobs(): Job[] {
-    return this.jobs;
+    return this.jobs.map(redactJobForOutput);
   }
 
   getJob(id: string): Job | undefined {
+    const job = this.jobs.find((j) => j.id === id);
+    return job ? redactJobForOutput(job) : undefined;
+  }
+
+  private findJobInternal(id: string): Job | undefined {
     return this.jobs.find((j) => j.id === id);
   }
 
@@ -207,9 +223,10 @@ export class JobQueueManager extends EventEmitter {
       throw new Error('Custom filename cannot be used when queuing multiple URLs at once');
     }
 
-    const headers = sanitizeHeaders(req.headers);
+    const rawHeaders = sanitizeHeaders(req.headers);
+    const redactedHeaders = redactHeaders(rawHeaders);
     const mode = req.mode === 'direct' ? 'direct' : 'staged';
-    if (mode === 'direct' && headers.length > 0) {
+    if (mode === 'direct' && rawHeaders.length > 0) {
       throw new Error(
         'Custom HTTP headers are only supported in Staged mode (rclone copyurl applies --header globally to Google Drive API requests)',
       );
@@ -217,7 +234,7 @@ export class JobQueueManager extends EventEmitter {
     const autoExtract = mode === 'staged' ? Boolean(req.autoExtract) : false;
     const autoRefreshJellyfin = Boolean(req.autoRefreshJellyfin);
 
-    // Validate all URLs (including SSRF DNS lookup) before accepting the batch
+    // Validate all URLs (including SSRF DNS lookup) before accepting the batch.
     const validatedUrls: string[] = [];
     for (const rawUrl of urls) {
       const parsed = await validatePublicUrl(rawUrl);
@@ -228,46 +245,53 @@ export class JobQueueManager extends EventEmitter {
     const destinationRemote = `${this.config.rcloneRoot}/${relDest}`;
     const now = new Date().toISOString();
 
-    const created: Job[] = validatedUrls.map((url) => ({
-      id: crypto.randomUUID(),
-      url,
-      folder,
-      subfolder,
-      destinationRemote,
-      customFilename,
-      resolvedFilename: customFilename || guessNameFromUrl(url),
-      mode,
-      autoExtract,
-      autoRefreshJellyfin,
-      headers,
-      status: 'queued',
-      phaseLabel: 'Queued',
-      progress: defaultProgress(),
-      logs: [`[${now}] Queued (${mode} mode) -> ${destinationRemote}`],
-      createdAt: now,
-    }));
+    const created: Job[] = validatedUrls.map((url) => {
+      const id = crypto.randomUUID();
+      if (rawHeaders.length > 0) {
+        this.liveHeaders.set(id, rawHeaders);
+      }
+      return {
+        id,
+        url,
+        folder,
+        subfolder,
+        destinationRemote,
+        customFilename,
+        resolvedFilename: customFilename || guessNameFromUrl(url),
+        mode,
+        autoExtract,
+        autoRefreshJellyfin,
+        headers: redactedHeaders,
+        status: 'queued',
+        phaseLabel: 'Queued',
+        progress: defaultProgress(),
+        logs: [`[${now}] Queued (${mode} mode) -> ${destinationRemote}`],
+        createdAt: now,
+      };
+    });
 
-    // Prepend newest jobs in reverse batch order so batch order matches visual order
+    // Prepend newest jobs in reverse batch order so batch order matches visual order.
     this.jobs = trimJobHistory([...created.slice().reverse(), ...this.jobs]);
     await this.store.save(this.jobs);
-    this.emit('jobs-changed', this.jobs);
+    this.emit('jobs-changed', this.listJobs());
     this.pumpQueue();
 
-    return created;
+    return created.map(redactJobForOutput);
   }
 
   async cancelJob(id: string): Promise<Job> {
-    const job = this.getJob(id);
+    const job = this.findJobInternal(id);
     if (!job) throw new Error('Job not found');
 
     if (job.status === 'queued') {
       job.status = 'cancelled';
       job.phaseLabel = 'Cancelled';
       job.finishedAt = new Date().toISOString();
+      this.liveHeaders.delete(id);
       this.appendLog(job, 'Cancelled while queued');
       await this.store.save(this.jobs);
       this.emitJob(job, true);
-      return job;
+      return redactJobForOutput(job);
     }
 
     const controller = this.activeControllers.get(id);
@@ -275,14 +299,14 @@ export class JobQueueManager extends EventEmitter {
       this.appendLog(job, 'Cancellation requested...');
       controller.abort();
       this.emitJob(job, true);
-      return job;
+      return redactJobForOutput(job);
     }
 
     throw new Error(`Cannot cancel job in state "${job.status}"`);
   }
 
   async retryJob(id: string): Promise<Job> {
-    const job = this.getJob(id);
+    const job = this.findJobInternal(id);
     if (!job) throw new Error('Job not found');
     if (this.activeControllers.has(id)) {
       throw new Error('Job is still running or cleaning up');
@@ -304,7 +328,7 @@ export class JobQueueManager extends EventEmitter {
     this.emitJob(job, true);
     this.pumpQueue();
 
-    return job;
+    return redactJobForOutput(job);
   }
 
   private async removeJobStagingDirs(jobId: string): Promise<void> {
@@ -317,15 +341,16 @@ export class JobQueueManager extends EventEmitter {
   }
 
   async deleteJob(id: string): Promise<void> {
-    const job = this.getJob(id);
+    const job = this.findJobInternal(id);
     if (!job) throw new Error('Job not found');
     if (this.activeControllers.has(id) || job.status === 'queued') {
       throw new Error('Cancel the active or queued job before deleting it');
     }
     this.jobs = this.jobs.filter((j) => j.id !== id);
+    this.liveHeaders.delete(id);
     await this.removeJobStagingDirs(id);
     await this.store.save(this.jobs);
-    this.emit('jobs-changed', this.jobs);
+    this.emit('jobs-changed', this.listJobs());
   }
 
   async clearFinished(): Promise<number> {
@@ -333,9 +358,12 @@ export class JobQueueManager extends EventEmitter {
     const removedJobs = this.jobs.filter((j) => !keepJob(j));
     if (removedJobs.length > 0) {
       this.jobs = this.jobs.filter(keepJob);
+      for (const removed of removedJobs) {
+        this.liveHeaders.delete(removed.id);
+      }
       await Promise.all(removedJobs.map((j) => this.removeJobStagingDirs(j.id)));
       await this.store.save(this.jobs);
-      this.emit('jobs-changed', this.jobs);
+      this.emit('jobs-changed', this.listJobs());
     }
     return removedJobs.length;
   }
@@ -363,7 +391,7 @@ export class JobQueueManager extends EventEmitter {
   private pumpQueue(): void {
     if (this.shuttingDown) return;
     while (this.activeControllers.size < this.config.maxConcurrentJobs) {
-      // Pick oldest queued job (FIFO) that has not already been claimed
+      // Pick oldest queued job (FIFO) that has not already been claimed.
       const next = [...this.jobs]
         .reverse()
         .find((j) => j.status === 'queued' && !this.activeControllers.has(j.id));
@@ -393,7 +421,11 @@ export class JobQueueManager extends EventEmitter {
     const prev = this.lastEmitAt.get(job.id) ?? 0;
     if (!force && now - prev < 400) return;
     this.lastEmitAt.set(job.id, now);
-    this.emit('job-update', job);
+    this.emit('job-update', redactJobForOutput(job));
+  }
+
+  private getExecutionHeaders(job: Job): CustomHeader[] {
+    return this.liveHeaders.get(job.id) ?? job.headers.filter((h) => h.value !== REDACTED_VALUE);
   }
 
   private async runJob(job: Job, controller?: AbortController): Promise<void> {
@@ -452,12 +484,14 @@ export class JobQueueManager extends EventEmitter {
           etaSeconds: 0,
         };
         job.finishedAt = new Date().toISOString();
+        this.liveHeaders.delete(job.id);
         this.appendLog(job, `Completed -> ${job.destinationRemote}`);
       } else if (outcome.status === 'cancelled') {
         job.status = 'cancelled';
         job.phaseLabel = 'Cancelled';
         job.error = undefined;
         job.finishedAt = new Date().toISOString();
+        this.liveHeaders.delete(job.id);
         this.appendLog(job, 'Job cancelled');
       } else {
         job.status = 'failed';
@@ -474,7 +508,7 @@ export class JobQueueManager extends EventEmitter {
       await this.store.save(this.jobs);
       this.emitJob(job, true);
       if (this.jobs.length !== beforeCount) {
-        this.emit('jobs-changed', this.jobs);
+        this.emit('jobs-changed', this.listJobs());
       }
       this.pumpQueue();
     }
@@ -483,16 +517,24 @@ export class JobQueueManager extends EventEmitter {
   private async executeDirectStream(job: Job, signal: AbortSignal): Promise<void> {
     job.status = 'uploading';
     job.phaseLabel = 'Direct streaming to Drive';
+    const safeUrl = await resolveSafeUrl(job.url, {
+      signal,
+      proxyUrl: this.config.downloadProxy,
+    });
+    if (this.config.downloadProxy) {
+      this.appendLog(job, `Using proxy: ${redactProxyUrl(this.config.downloadProxy)}`);
+    }
     this.appendLog(job, `Starting rclone copyurl -> ${job.destinationRemote}`);
     this.emitJob(job, true);
 
     await runRcloneCopyUrl(
       this.config,
       {
-        url: job.url,
+        url: safeUrl,
         destRemoteDir: job.destinationRemote,
         customFilename: job.customFilename,
-        headers: job.headers,
+        headers: this.getExecutionHeaders(job),
+        proxyUrl: this.config.downloadProxy,
       },
       {
         signal,
@@ -525,8 +567,8 @@ export class JobQueueManager extends EventEmitter {
       throw new Error('Cancelled');
     }
     if (disk.freeBytes < this.config.minFreeDiskBytes) {
-      const freeGb = (disk.freeBytes / 1024 ** 3).toFixed(1);
-      const minGb = (this.config.minFreeDiskBytes / 1024 ** 3).toFixed(0);
+      const freeGb = (disk.freeBytes / GIB).toFixed(1);
+      const minGb = (this.config.minFreeDiskBytes / GIB).toFixed(0);
       throw new Error(
         `Insufficient VPS disk space (${freeGb} GB free; minimum ${minGb} GB required)`,
       );
@@ -538,13 +580,23 @@ export class JobQueueManager extends EventEmitter {
       throw new Error('Cancelled');
     }
 
+    const executionHeaders = this.getExecutionHeaders(job);
+    const safeUrl = await resolveSafeUrl(job.url, {
+      headers: executionHeaders,
+      signal,
+      proxyUrl: this.config.downloadProxy,
+    });
+
     job.status = 'downloading';
     job.phaseLabel = 'Downloading to VPS (aria2c 16x)';
     job.progress = defaultProgress();
+    if (this.config.downloadProxy) {
+      this.appendLog(job, `Using proxy: ${redactProxyUrl(this.config.downloadProxy)}`);
+    }
     this.appendLog(job, 'Starting aria2c multi-connection download...');
     this.emitJob(job, true);
 
-    await this.runAria2c(job, jobStagingDir, signal);
+    await this.runAria2c(job, safeUrl, executionHeaders, jobStagingDir, signal);
 
     const downloadedEntries = (await fs.readdir(jobStagingDir)).filter(
       (name) => !name.endsWith('.aria2'),
@@ -560,6 +612,7 @@ export class JobQueueManager extends EventEmitter {
     if (job.autoExtract && downloadedEntries.length === 1 && detectArchiveFormat(primaryFile)) {
       const archivePath = path.join(jobStagingDir, primaryFile);
       const extractDir = path.join(jobStagingDir, 'extracted');
+      const postDownloadDisk = await this.getDiskStatus();
 
       job.status = 'extracting';
       job.phaseLabel = `Extracting ${primaryFile}`;
@@ -573,10 +626,20 @@ export class JobQueueManager extends EventEmitter {
       this.appendLog(job, `Extracting archive: ${primaryFile}`);
       this.emitJob(job, true);
 
-      await extractArchive(archivePath, extractDir, signal, (line) => {
-        this.appendLog(job, `[extract] ${line}`);
-        this.emitJob(job);
-      });
+      await extractArchive(
+        archivePath,
+        extractDir,
+        signal,
+        (line) => {
+          this.appendLog(job, `[extract] ${line}`);
+          this.emitJob(job);
+        },
+        {
+          maxExtractBytes: this.config.maxExtractBytes,
+          freeDiskBytes: postDownloadDisk.freeBytes,
+          minFreeDiskBytes: this.config.minFreeDiskBytes,
+        },
+      );
 
       await fs.unlink(archivePath);
       const extractedItems = await fs.readdir(extractDir);
@@ -616,14 +679,28 @@ export class JobQueueManager extends EventEmitter {
     await assertNoSkippedFiles(uploadSourceDir, job.destinationRemote);
   }
 
-  private runAria2c(job: Job, stagingDir: string, signal: AbortSignal): Promise<void> {
+  private runAria2c(
+    job: Job,
+    downloadUrl: string,
+    headers: CustomHeader[],
+    stagingDir: string,
+    signal: AbortSignal,
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       if (signal.aborted) {
         reject(new Error('Cancelled'));
         return;
       }
 
-      const args = buildAria2Args(job, stagingDir);
+      const args = buildAria2Args(
+        {
+          url: downloadUrl,
+          customFilename: job.customFilename,
+          headers,
+        },
+        stagingDir,
+        this.config.downloadProxy,
+      );
 
       const child = spawn('aria2c', args, { stdio: ['ignore', 'pipe', 'pipe'] });
       const abortHandle = attachAbortKill(child, signal);

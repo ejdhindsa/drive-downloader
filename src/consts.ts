@@ -1,0 +1,14 @@
+export const MIB = 1024 ** 2;
+export const GIB = 1024 ** 3;
+
+export const DEFAULT_MIN_FREE_DISK_GB = 15;
+export const DEFAULT_MAX_EXTRACT_SIZE_GB = 50;
+export const DEFAULT_MAX_EXTRACT_BYTES = DEFAULT_MAX_EXTRACT_SIZE_GB * GIB;
+
+export const DEFAULT_MAX_CONCURRENT_JOBS = 2;
+export const MAX_CONCURRENT_JOBS_CAP = 6;
+
+export const DEFAULT_MAX_COMPRESSION_RATIO = 100;
+export const RATIO_CHECK_MIN_BYTES = GIB;
+
+export const REDACTED_VALUE = '[REDACTED]';

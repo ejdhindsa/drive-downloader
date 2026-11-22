@@ -1,8 +1,9 @@
 import type { ServerResponse } from 'node:http';
 import path from 'node:path';
 import fastifyStatic from '@fastify/static';
-import Fastify from 'fastify';
-import { loadConfig } from './config';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { type AppConfig, loadConfig } from './config';
+import { type HttpSecurityOptions, registerHttpSecurity } from './http-security';
 import { refreshMediaTargets } from './jellyfin';
 import { JobQueueManager } from './queue';
 import { listDriveDirectories } from './rclone';
@@ -10,22 +11,26 @@ import { sanitizeRelativePath } from './security';
 import { JobStore, verifyWritableDirectory } from './store';
 import type { CreateJobsRequest, Job } from './types';
 
-async function main(): Promise<void> {
-  const config = loadConfig();
-  await verifyWritableDirectory(config.dataDir, 'DATA_DIR');
-  await verifyWritableDirectory(config.stagingDir, 'STAGING_DIR');
+export interface BuildAppOptions {
+  config: AppConfig;
+  queue: JobQueueManager;
+  logger?: boolean | { level: string };
+  security?: HttpSecurityOptions;
+}
 
-  const store = new JobStore(config.dataDir);
-  const queue = new JobQueueManager(config, store);
-  await queue.init();
+export async function buildApp(opts: BuildAppOptions): Promise<{
+  app: FastifyInstance;
+  closeSseClients: () => void;
+}> {
+  const { config, queue } = opts;
 
   const app = Fastify({
-    logger: {
-      level: process.env.LOG_LEVEL || 'info',
-    },
+    logger: opts.logger ?? { level: process.env.LOG_LEVEL || 'info' },
     trustProxy: true,
     bodyLimit: 1024 * 1024,
   });
+
+  registerHttpSecurity(app, opts.security);
 
   const publicDir = path.resolve(__dirname, '../../public');
   await app.register(fastifyStatic, {
@@ -41,8 +46,10 @@ async function main(): Promise<void> {
       rcloneRoot: config.rcloneRoot,
       jellyfinConfigured: Boolean(config.jellyfinUrl && config.jellyfinApiKey),
       rcloneRcConfigured: Boolean(config.rcloneRcUrl),
+      proxyConfigured: Boolean(config.downloadProxy),
       maxConcurrentJobs: config.maxConcurrentJobs,
       minFreeDiskBytes: config.minFreeDiskBytes,
+      maxExtractBytes: config.maxExtractBytes,
       disk,
     };
   });
@@ -174,16 +181,36 @@ async function main(): Promise<void> {
     res.on('close', cleanup);
   });
 
-  const shutdown = async () => {
-    if (shuttingDown) return;
+  const closeSseClients = () => {
     shuttingDown = true;
-    app.log.info('Shutting down drive-downloader...');
     for (const res of sseClients) {
       if (!res.writableEnded) {
         res.end();
       }
     }
     sseClients.clear();
+  };
+
+  return { app, closeSseClients };
+}
+
+async function main(): Promise<void> {
+  const config = loadConfig();
+  await verifyWritableDirectory(config.dataDir, 'DATA_DIR');
+  await verifyWritableDirectory(config.stagingDir, 'STAGING_DIR');
+
+  const store = new JobStore(config.dataDir);
+  const queue = new JobQueueManager(config, store);
+  await queue.init();
+
+  const { app, closeSseClients } = await buildApp({ config, queue });
+
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.log.info('Shutting down drive-downloader...');
+    closeSseClients();
     await queue.shutdown();
     await app.close();
     process.exit(0);
@@ -195,7 +222,9 @@ async function main(): Promise<void> {
   await app.listen({ port: config.port, host: config.host });
 }
 
-main().catch((err) => {
-  console.error('Fatal startup error:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('Fatal startup error:', err);
+    process.exit(1);
+  });
+}
