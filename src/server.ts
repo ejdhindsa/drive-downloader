@@ -121,9 +121,49 @@ export async function buildApp(opts: BuildAppOptions): Promise<{
     }
   });
 
+  app.post('/api/jobs/retry-failed', async () => {
+    const retried = await queue.retryAllFailed();
+    return { retried };
+  });
+
+  app.post('/api/jobs/cancel-all', async () => {
+    const cancelled = await queue.cancelAllActive();
+    return { cancelled };
+  });
+
   app.post<{ Params: { id: string } }>('/api/jobs/:id/cancel', async (request, reply) => {
     try {
       const job = await queue.cancelJob(request.params.id);
+      return { job };
+    } catch (err) {
+      const msg = (err as Error).message;
+      return reply.code(msg === 'Job not found' ? 404 : 400).send({ error: msg });
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/api/jobs/:id/pause', async (request, reply) => {
+    try {
+      const job = await queue.pauseJob(request.params.id);
+      return { job };
+    } catch (err) {
+      const msg = (err as Error).message;
+      return reply.code(msg === 'Job not found' ? 404 : 400).send({ error: msg });
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/api/jobs/:id/resume', async (request, reply) => {
+    try {
+      const job = await queue.resumeJob(request.params.id);
+      return { job };
+    } catch (err) {
+      const msg = (err as Error).message;
+      return reply.code(msg === 'Job not found' ? 404 : 400).send({ error: msg });
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/api/jobs/:id/prioritize', async (request, reply) => {
+    try {
+      const job = await queue.prioritizeJob(request.params.id);
       return { job };
     } catch (err) {
       const msg = (err as Error).message;

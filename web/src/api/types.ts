@@ -2,6 +2,7 @@ export type TransferMode = 'staged' | 'direct';
 
 export type JobStatus =
   | 'queued'
+  | 'paused'
   | 'downloading'
   | 'extracting'
   | 'uploading'
@@ -33,6 +34,7 @@ export interface Job {
   mode: TransferMode;
   autoExtract: boolean;
   autoRefreshJellyfin: boolean;
+  priority?: number;
   headers: CustomHeader[];
   status: JobStatus;
   phaseLabel: string;

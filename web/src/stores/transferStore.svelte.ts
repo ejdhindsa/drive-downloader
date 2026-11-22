@@ -9,6 +9,7 @@ import type {
 function isActiveJob(job: Job): boolean {
   return (
     job.status === 'queued' ||
+    job.status === 'paused' ||
     job.status === 'downloading' ||
     job.status === 'extracting' ||
     job.status === 'uploading'
