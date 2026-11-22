@@ -6,6 +6,8 @@
   "type": "commonjs",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:web": "npm --prefix web run build",
+    "build:all": "npm run build && npm run build:web",
     "start": "node dist/src/server.js",
     "dev": "node scripts/dev.mjs",
     "dev:api": "npm run build && node --watch dist/src/server.js",
