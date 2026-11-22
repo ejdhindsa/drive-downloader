@@ -80,6 +80,9 @@ describe('media-refresh service', () => {
       'POST https://hooks.example.com/upload/secret-path',
     ]);
 
+    const jellyfinCall = calls[1];
+    expect(jellyfinCall.headers.Authorization).toBe('MediaBrowser Token="jf-key"');
+
     const webhookCall = calls[5];
     expect(JSON.parse(webhookCall.body!)).toMatchObject({
       event: 'upload.completed',
