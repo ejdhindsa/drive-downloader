@@ -91,6 +91,12 @@ export interface FoldersResponse {
   folders: string[];
 }
 
+export interface CreateFolderResponse {
+  root: string;
+  path: string;
+  remoteTarget: string;
+}
+
 export interface CreateJobsPayload {
   urls: string[];
   folder: string;

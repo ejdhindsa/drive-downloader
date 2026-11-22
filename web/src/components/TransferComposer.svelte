@@ -1,8 +1,10 @@
 <script lang="ts">
-  import { enqueueJobs, fetchFolders } from '../api/client';
+  import { enqueueJobs } from '../api/client';
   import type { CustomHeader, TransferMode } from '../api/types';
   import { toasts } from '../stores/toasts.svelte';
   import { transferStore } from '../stores/transferStore.svelte';
+  import { suggestMediaDestination } from '../utils/mediaHints';
+  import FolderBrowser from './FolderBrowser.svelte';
   import HeadersEditor from './HeadersEditor.svelte';
 
   const ADVANCED_STORAGE_KEY = 'drive-downloader:composer-advanced';
@@ -18,13 +20,8 @@
   let showAdvanced = $state(readInitialAdvanced());
   let rawUrls = $state('');
   let dragging = $state(false);
-  let folders = $state<string[]>([]);
-  let subfolders = $state<string[]>([]);
-  let folderError = $state('');
-  let loadingFolders = $state(false);
-
-  let selectedFolder = $state('');
-  let existingSubfolder = $state('');
+  let selectedPath = $state('');
+  let topFolders = $state<string[]>([]);
   let newSubfolder = $state('');
   let customFilename = $state('');
   let mode = $state<TransferMode>('staged');
@@ -57,59 +54,32 @@
     isDirect ? 0 : headers.filter((h) => h.name.trim() || h.value.trim()).length,
   );
 
+  let pathParts = $derived(
+    selectedPath
+      .split('/')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+
+  let topFolder = $derived(pathParts[0] ?? '');
+  let nestedSubfolder = $derived(pathParts.slice(1).join('/'));
+
+  let suggestion = $derived(suggestMediaDestination(parsedUrls, topFolders));
+
   let destinationPreview = $derived.by(() => {
     const root = transferStore.config?.rcloneRoot || 'gdrive:Media';
     const cleanNewSub = newSubfolder.trim().replace(/^\/+|\/+$/g, '');
-    const parts = [selectedFolder, existingSubfolder, cleanNewSub].filter(Boolean);
+    const parts = [topFolder, nestedSubfolder, cleanNewSub].filter(Boolean);
     const base = parts.length > 0 ? `${root}/${parts.join('/')}` : root;
     const fileSuffix = !isBatch && customFilename.trim() ? `/${customFilename.trim()}` : '/';
     return `${base}${fileSuffix}`;
   });
 
-  async function loadTopFolders(refresh = false) {
-    loadingFolders = true;
-    folderError = '';
-    try {
-      const data = await fetchFolders('', refresh);
-      folders = data.folders ?? [];
-      if (folders.length > 0 && !folders.includes(selectedFolder)) {
-        selectedFolder = folders[0];
-      }
-      if (selectedFolder) {
-        await loadSubfolders(selectedFolder, refresh);
-      } else {
-        subfolders = [];
-      }
-    } catch (err) {
-      folderError = err instanceof Error ? err.message : 'Could not list Drive folders';
-      folders = [];
-      subfolders = [];
-    } finally {
-      loadingFolders = false;
-    }
-  }
-
-  async function loadSubfolders(folder: string, refresh = false) {
-    existingSubfolder = '';
-    if (!folder) {
-      subfolders = [];
-      return;
-    }
-    try {
-      const data = await fetchFolders(folder, refresh);
-      subfolders = data.folders ?? [];
-    } catch {
-      subfolders = [];
-    }
-  }
-
-  $effect(() => {
-    void loadTopFolders(false);
-  });
-
-  function selectFolder(folder: string) {
-    selectedFolder = folder;
-    void loadSubfolders(folder, false);
+  function applySuggestion() {
+    if (!suggestion) return;
+    selectedPath = suggestion.folder;
+    newSubfolder = suggestion.subfolder;
+    toasts.push('info', `Target set to ${suggestion.label}`);
   }
 
   function extractUrlsFromText(text: string): string[] {
@@ -185,8 +155,8 @@
       toasts.push('danger', 'Paste at least one http:// or https:// URL.');
       return;
     }
-    if (!selectedFolder.trim()) {
-      toasts.push('danger', 'Select or enter a destination Drive folder.');
+    if (!topFolder) {
+      toasts.push('danger', 'Select or create a destination Drive folder inside Media/.');
       return;
     }
 
@@ -200,8 +170,8 @@
     try {
       const jobs = await enqueueJobs({
         urls: parsedUrls,
-        folder: selectedFolder.trim(),
-        existingSubfolder,
+        folder: topFolder,
+        existingSubfolder: nestedSubfolder,
         newSubfolder: newSubfolder.trim(),
         customFilename: isBatch ? '' : customFilename.trim(),
         mode,
@@ -305,80 +275,15 @@
       {/if}
     </div>
 
-    <div class="field">
-      <div class="label-row">
-        <label for="folder-input">Destination Folder</label>
-        <button
-          type="button"
-          class="refresh-btn"
-          class:spinning={loadingFolders}
-          title="Refresh Drive folders"
-          disabled={loadingFolders}
-          onclick={() => void loadTopFolders(true)}
-        >
-          <svg viewBox="0 0 20 20" width="13" height="13">
-            <path
-              d="M16 10a6 6 0 1 1-1.76-4.24M16 4v3.5h-3.5"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.75"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-          <span>{loadingFolders ? 'Syncing' : 'Refresh'}</span>
-        </button>
-      </div>
+    {#if suggestion}
+      <button type="button" class="hint-banner" onclick={applySuggestion}>
+        <span class="hint-tag">Smart path</span>
+        <span class="hint-path mono">{suggestion.label}</span>
+        <span class="hint-apply">Apply</span>
+      </button>
+    {/if}
 
-      {#if folders.length > 0}
-        <div class="folder-chips">
-          {#each folders as folder (folder)}
-            <button
-              type="button"
-              class="folder-chip"
-              class:selected={selectedFolder === folder}
-              onclick={() => selectFolder(folder)}
-            >
-              <svg viewBox="0 0 20 20" width="14" height="14">
-                <path
-                  d="M2.5 5.5A1.5 1.5 0 0 1 4 4h3.2l1.6 1.8H16a1.5 1.5 0 0 1 1.5 1.5v7.2A1.5 1.5 0 0 1 16 16H4a1.5 1.5 0 0 1-1.5-1.5v-9Z"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linejoin="round"
-                />
-              </svg>
-              <span>{folder}</span>
-            </button>
-          {/each}
-        </div>
-      {:else}
-        <input
-          id="folder-input"
-          type="text"
-          bind:value={selectedFolder}
-          placeholder={loadingFolders ? 'Loading Drive folders...' : 'Enter folder name (e.g. Movies)'}
-          required
-        />
-      {/if}
-
-      {#if subfolders.length > 0}
-        <select
-          id="subfolder-select"
-          class="subfolder-select"
-          bind:value={existingSubfolder}
-        >
-          <option value="">Root of {selectedFolder}/</option>
-          {#each subfolders as sub (sub)}
-            <option value={sub}>{selectedFolder}/{sub}</option>
-          {/each}
-        </select>
-      {/if}
-
-      {#if folderError}
-        <p class="folder-hint">{folderError} — enter a folder name manually above.</p>
-      {/if}
-    </div>
+    <FolderBrowser bind:selectedPath bind:topFolders />
 
     <div class="dest-ribbon mono">
       <span class="dest-dot"></span>
@@ -737,16 +642,51 @@
     pointer-events: none;
   }
 
+  .hint-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--uw-space-2);
+    width: 100%;
+    padding: var(--uw-space-2) var(--uw-space-3);
+    background: var(--uw-info-bg);
+    border: 1px solid var(--uw-info-border);
+    border-radius: var(--uw-radius-lg);
+    color: var(--uw-info-fg);
+    font-family: var(--uw-font-sans);
+    font-size: var(--uw-font-size-xs);
+    cursor: pointer;
+    text-align: left;
+    transition: background-color var(--uw-duration-fast) var(--uw-easing-standard);
+  }
+
+  .hint-banner:hover {
+    background: var(--uw-info-bg-hover);
+  }
+
+  .hint-tag {
+    font-weight: var(--uw-font-weight-bold);
+    text-transform: uppercase;
+    letter-spacing: var(--uw-letter-spacing-wider);
+    font-size: 0.65rem;
+    flex-shrink: 0;
+  }
+
+  .hint-path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .hint-apply {
+    font-weight: var(--uw-font-weight-semibold);
+    flex-shrink: 0;
+  }
+
   .field {
     display: flex;
     flex-direction: column;
-    gap: var(--uw-space-2);
-  }
-
-  .label-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
     gap: var(--uw-space-2);
   }
 
@@ -757,77 +697,13 @@
     color: var(--uw-fg-muted);
   }
 
-  .refresh-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--uw-space-1);
-    border: 0;
-    background: transparent;
-    color: var(--uw-fg-muted);
-    font-family: var(--uw-font-sans);
-    font-size: var(--uw-font-size-xs);
-    font-weight: var(--uw-font-weight-medium);
-    cursor: pointer;
-    padding: var(--uw-space-0-5) var(--uw-space-1);
-    border-radius: var(--uw-radius-sm);
-    transition: color var(--uw-duration-fast) var(--uw-easing-standard);
-  }
-
-  .refresh-btn:hover:not(:disabled) {
-    color: var(--uw-fg-default);
-  }
-
-  .refresh-btn.spinning svg {
-    animation: spin 0.9s linear infinite;
-  }
-
   @keyframes spin {
     to {
       transform: rotate(360deg);
     }
   }
 
-  .folder-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--uw-space-2);
-  }
-
-  .folder-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--uw-space-1);
-    padding: var(--uw-space-2) var(--uw-space-3);
-    background: var(--uw-bg-subtle);
-    border: 1px solid var(--uw-border-default);
-    border-radius: var(--uw-radius-lg);
-    color: var(--uw-fg-default);
-    font-family: var(--uw-font-sans);
-    font-size: var(--uw-font-size-xs);
-    font-weight: var(--uw-font-weight-semibold);
-    cursor: pointer;
-    transition:
-      background-color var(--uw-duration-fast) var(--uw-easing-standard),
-      border-color var(--uw-duration-fast) var(--uw-easing-standard),
-      transform var(--uw-duration-fast) var(--uw-easing-standard),
-      box-shadow var(--uw-duration-fast) var(--uw-easing-standard);
-  }
-
-  .folder-chip:hover {
-    border-color: var(--uw-border-strong);
-    background: var(--uw-bg-surface-hover);
-    transform: translateY(-1px);
-  }
-
-  .folder-chip.selected {
-    background: var(--uw-brand-bg);
-    border-color: var(--uw-brand-solid);
-    color: var(--uw-brand-fg);
-    box-shadow: var(--uw-shadow-sm);
-  }
-
-  input[type='text'],
-  select {
+  input[type='text'] {
     width: 100%;
     background: var(--uw-bg-subtle);
     color: var(--uw-fg-default);
@@ -841,30 +717,15 @@
       box-shadow var(--uw-duration-fast) var(--uw-easing-standard);
   }
 
-  input[type='text']:focus,
-  select:focus {
+  input[type='text']:focus {
     outline: none;
     border-color: var(--uw-focus-ring);
     box-shadow: 0 0 0 3px color-mix(in oklch, var(--uw-brand-solid) 18%, transparent);
   }
 
-  input:disabled,
-  select:disabled {
+  input:disabled {
     opacity: 0.55;
     cursor: not-allowed;
-  }
-
-  .subfolder-select {
-    font-size: var(--uw-font-size-xs);
-  }
-
-  .folder-hint {
-    font-size: var(--uw-font-size-xs);
-    color: var(--uw-warning-fg);
-    background: var(--uw-warning-bg);
-    border: 1px solid var(--uw-warning-border);
-    border-radius: var(--uw-radius-md);
-    padding: var(--uw-space-2) var(--uw-space-3);
   }
 
   .dest-ribbon {
