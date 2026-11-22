@@ -54,8 +54,8 @@
     color: var(--uw-brand-solid);
     flex-shrink: 0;
     font-variation-settings:
-      'FILL' 0,
-      'wght' 500,
+      'FILL' 1,
+      'wght' 300,
       'GRAD' 0,
       'opsz' 24;
   }
