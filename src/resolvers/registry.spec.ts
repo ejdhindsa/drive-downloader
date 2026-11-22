@@ -174,6 +174,7 @@ describe('ResolverRegistry', () => {
       'archiveorg',
       'buzzheavier',
       'onefichier',
+      'ytdlp',
       'direct',
     ]);
 

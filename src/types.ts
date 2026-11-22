@@ -2,6 +2,8 @@ export type TransferMode = 'staged' | 'direct';
 
 export type ConflictPolicy = 'skip' | 'overwrite' | 'rename';
 
+export type YtDlpFormat = 'best-mp4' | '1080p' | '720p' | 'audio-mp3' | 'audio-m4a';
+
 export type JobStatus =
   | 'queued'
   | 'paused'
@@ -38,6 +40,7 @@ export interface Job {
   resolverName?: string;
   mode: TransferMode;
   conflictPolicy?: ConflictPolicy;
+  ytDlpFormat?: YtDlpFormat;
   autoExtract: boolean;
   autoRefreshJellyfin: boolean;
   priority?: number;
@@ -61,6 +64,7 @@ export interface CreateJobsRequest {
   customFilenames?: Record<string, string>;
   mode: TransferMode;
   conflictPolicy?: ConflictPolicy;
+  ytDlpFormat?: YtDlpFormat;
   autoExtract: boolean;
   archivePassword?: string;
   autoRefreshJellyfin: boolean;
@@ -108,6 +112,7 @@ export interface ResolvedTarget {
   sourceUrl?: string;
   hoster: string;
   category?: FileCategory;
+  engine?: 'aria2c' | 'yt-dlp';
   note?: string;
 }
 

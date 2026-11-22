@@ -193,18 +193,19 @@
     background: var(--uw-bg-subtle);
     color: var(--uw-fg-default);
     border-radius: var(--uw-radius-md);
-    padding: var(--uw-space-1) var(--uw-space-3);
+    padding: var(--uw-space-2) var(--uw-space-3);
     font-family: var(--uw-font-sans);
     font-size: var(--uw-font-size-xs);
     font-weight: var(--uw-font-weight-semibold);
     cursor: pointer;
     flex-shrink: 0;
+    line-height: 1.2;
   }
 
   .origin-field {
     display: flex;
     flex-direction: column;
-    gap: var(--uw-space-1-5);
+    gap: var(--uw-space-2);
   }
 
   .origin-field label {
@@ -261,12 +262,14 @@
   .drag-pill {
     display: inline-flex;
     align-items: center;
-    padding: var(--uw-space-1-5) var(--uw-space-3);
+    padding: var(--uw-space-2) var(--uw-space-4);
     border-radius: var(--uw-radius-full);
     background: var(--uw-brand-solid);
     color: var(--uw-brand-on-solid);
     font-size: var(--uw-font-size-xs);
     font-weight: var(--uw-font-weight-semibold);
+    line-height: 1.2;
+    white-space: nowrap;
     text-decoration: none;
     cursor: grab;
   }

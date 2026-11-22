@@ -18,6 +18,8 @@ WORKDIR /app
 RUN apk add --no-cache \
     rclone \
     aria2 \
+    yt-dlp \
+    ffmpeg \
     7zip \
     libarchive-tools \
     unzip \
@@ -28,7 +30,7 @@ RUN apk add --no-cache \
     ca-certificates \
     tzdata
 
-RUN command -v rclone && command -v aria2c && command -v unzip && command -v tar && command -v bsdtar && (command -v 7zz || command -v 7z)
+RUN command -v rclone && command -v aria2c && command -v unzip && command -v tar && command -v bsdtar && command -v yt-dlp && command -v ffmpeg && (command -v 7zz || command -v 7z)
 
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force

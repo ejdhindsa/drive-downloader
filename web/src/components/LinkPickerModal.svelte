@@ -425,7 +425,7 @@
     color: var(--uw-fg-default);
     border: 1px solid var(--uw-border-default);
     border-radius: var(--uw-radius-md);
-    padding: var(--uw-space-1-5) var(--uw-space-3);
+    padding: var(--uw-space-2) var(--uw-space-3);
     font-family: var(--uw-font-sans);
     font-size: var(--uw-font-size-xs);
   }
@@ -455,7 +455,7 @@
   .chip-groups {
     display: flex;
     flex-direction: column;
-    gap: var(--uw-space-1-5);
+    gap: var(--uw-space-2);
   }
 
   .chip-row {
@@ -514,7 +514,7 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: var(--uw-space-1-5);
+    gap: var(--uw-space-2);
   }
 
   .picker-row {

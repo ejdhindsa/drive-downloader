@@ -1,6 +1,12 @@
 <script lang="ts">
   import { enqueueJobs, inspectUrls } from '../api/client';
-  import type { ConflictPolicy, CustomHeader, InspectResponse, TransferMode } from '../api/types';
+  import type {
+    ConflictPolicy,
+    CustomHeader,
+    InspectResponse,
+    TransferMode,
+    YtDlpFormat,
+  } from '../api/types';
   import { toasts } from '../stores/toasts.svelte';
   import { transferStore } from '../stores/transferStore.svelte';
   import { looksLikeCurlCommand, parseCurlCommand } from '../utils/curlParser';
@@ -29,6 +35,7 @@
   let customFilename = $state('');
   let mode = $state<TransferMode>('staged');
   let conflictPolicy = $state<ConflictPolicy>('skip');
+  let ytDlpFormat = $state<YtDlpFormat>('best-mp4');
   let autoExtract = $state(true);
   let archivePassword = $state('');
   let autoRefreshJellyfin = $state(true);
@@ -73,6 +80,44 @@
 
   let topFolder = $derived(pathParts[0] ?? '');
   let nestedSubfolder = $derived(pathParts.slice(1).join('/'));
+
+  const YTDLP_PRESETS: Array<{ id: YtDlpFormat; label: string }> = [
+    { id: 'best-mp4', label: 'Best MP4' },
+    { id: '1080p', label: '1080p' },
+    { id: '720p', label: '720p' },
+    { id: 'audio-mp3', label: 'Audio MP3' },
+    { id: 'audio-m4a', label: 'Audio M4A' },
+  ];
+
+  const VIDEO_PLATFORM_HOSTS = [
+    'youtube.com',
+    'youtu.be',
+    'music.youtube.com',
+    'vimeo.com',
+    'twitch.tv',
+    'soundcloud.com',
+    'bandcamp.com',
+    'dailymotion.com',
+    'dai.ly',
+    'bilibili.com',
+    'tiktok.com',
+    'rumble.com',
+  ];
+
+  function looksLikeVideoPlatformUrl(raw: string): boolean {
+    try {
+      const host = new URL(raw).hostname.toLowerCase();
+      return VIDEO_PLATFORM_HOSTS.some((d) => host === d || host.endsWith(`.${d}`));
+    } catch {
+      return false;
+    }
+  }
+
+  let hasVideoPlatformUrl = $derived(
+    parsedUrls.some(looksLikeVideoPlatformUrl) ||
+      Boolean(inspectResult?.items.some((item) => item.engine === 'yt-dlp')),
+  );
+  let ytDlpAvailable = $derived(transferStore.config?.ytDlpAvailable ?? false);
 
   let suggestion = $derived(suggestMediaDestination(parsedUrls, topFolders));
 
@@ -286,6 +331,7 @@
         newSubfolder: newSubfolder.trim(),
         mode,
         conflictPolicy,
+        ytDlpFormat: !isDirect && (hasVideoPlatformUrl || showAdvanced) ? ytDlpFormat : undefined,
         autoExtract: isDirect ? false : autoExtract,
         archivePassword: !isDirect && autoExtract && archivePassword ? archivePassword : undefined,
         autoRefreshJellyfin: transferStore.hasMediaRefresh ? autoRefreshJellyfin : false,
@@ -378,6 +424,7 @@
         customFilename: isBatch ? '' : customFilename.trim(),
         mode,
         conflictPolicy,
+        ytDlpFormat: !isDirect && (hasVideoPlatformUrl || showAdvanced) ? ytDlpFormat : undefined,
         autoExtract: isDirect ? false : autoExtract,
         archivePassword: !isDirect && autoExtract && archivePassword ? archivePassword : undefined,
         autoRefreshJellyfin: transferStore.hasMediaRefresh ? autoRefreshJellyfin : false,
@@ -584,6 +631,32 @@
       </button>
     {/if}
 
+    {#if hasVideoPlatformUrl}
+      <div class="ytdlp-box">
+        <div class="ytdlp-head">
+          <span class="field-label">Video / Audio Preset (yt-dlp)</span>
+          {#if !ytDlpAvailable}
+            <span class="ytdlp-warn">yt-dlp binary not detected on server</span>
+          {:else if isDirect}
+            <span class="ytdlp-warn">Requires Staged mode</span>
+          {/if}
+        </div>
+        <div class="preset-row">
+          {#each YTDLP_PRESETS as preset (preset.id)}
+            <button
+              type="button"
+              class="preset-btn"
+              class:selected={ytDlpFormat === preset.id}
+              disabled={isDirect}
+              onclick={() => (ytDlpFormat = preset.id)}
+            >
+              {preset.label}
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
     <FolderBrowser bind:selectedPath bind:topFolders />
 
     <div class="dest-ribbon mono">
@@ -629,6 +702,11 @@
         {#if archivePassword}
           <button type="button" class="summary-chip accent" onclick={() => (showAdvanced = true)}>
             Password set
+          </button>
+        {/if}
+        {#if hasVideoPlatformUrl && !isDirect}
+          <button type="button" class="summary-chip accent" onclick={() => (showAdvanced = true)}>
+            yt-dlp: {ytDlpFormat}
           </button>
         {/if}
       </div>
@@ -708,6 +786,24 @@
               {/each}
             </div>
           </div>
+
+          {#if ytDlpAvailable && !hasVideoPlatformUrl && !isDirect}
+            <div class="field">
+              <span class="field-label">Video / Audio Preset (yt-dlp)</span>
+              <div class="preset-row">
+                {#each YTDLP_PRESETS as preset (preset.id)}
+                  <button
+                    type="button"
+                    class="preset-btn"
+                    class:selected={ytDlpFormat === preset.id}
+                    onclick={() => (ytDlpFormat = preset.id)}
+                  >
+                    {preset.label}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/if}
 
           <div class="toggles">
             <label class="switch-row" class:disabled={isDirect}>
@@ -1059,7 +1155,7 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: var(--uw-space-1-5);
+    gap: var(--uw-space-2);
     max-height: 12rem;
     overflow-y: auto;
   }
@@ -1069,7 +1165,7 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--uw-space-2);
-    padding: var(--uw-space-1-5) var(--uw-space-2);
+    padding: var(--uw-space-2) var(--uw-space-3);
     border-radius: var(--uw-radius-md);
     background: var(--uw-bg-surface);
     border: 1px solid var(--uw-border-subtle);
@@ -1099,7 +1195,7 @@
   .inspect-meta {
     display: inline-flex;
     align-items: center;
-    gap: var(--uw-space-1-5);
+    gap: var(--uw-space-2);
     flex-shrink: 0;
   }
 
@@ -1276,6 +1372,68 @@
     background: var(--uw-brand-bg);
     border-color: var(--uw-brand-solid);
     color: var(--uw-brand-fg);
+  }
+
+  .ytdlp-box {
+    display: flex;
+    flex-direction: column;
+    gap: var(--uw-space-2);
+    padding: var(--uw-space-3);
+    border-radius: var(--uw-radius-lg);
+    border: 1px solid var(--uw-border-default);
+    background: var(--uw-bg-subtle);
+  }
+
+  .ytdlp-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--uw-space-2);
+    flex-wrap: wrap;
+  }
+
+  .ytdlp-warn {
+    font-size: 0.72rem;
+    color: var(--uw-warning-fg);
+    font-weight: var(--uw-font-weight-medium);
+  }
+
+  .preset-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--uw-space-2);
+  }
+
+  .preset-btn {
+    border: 1px solid var(--uw-border-default);
+    background: var(--uw-bg-surface);
+    color: var(--uw-fg-muted);
+    border-radius: var(--uw-radius-full);
+    padding: var(--uw-space-1) var(--uw-space-3);
+    font-family: var(--uw-font-sans);
+    font-size: var(--uw-font-size-xs);
+    font-weight: var(--uw-font-weight-semibold);
+    cursor: pointer;
+    transition:
+      background-color var(--uw-duration-fast) var(--uw-easing-standard),
+      border-color var(--uw-duration-fast) var(--uw-easing-standard),
+      color var(--uw-duration-fast) var(--uw-easing-standard);
+  }
+
+  .preset-btn:hover:not(:disabled) {
+    color: var(--uw-fg-default);
+    border-color: var(--uw-border-strong);
+  }
+
+  .preset-btn.selected {
+    background: var(--uw-brand-bg);
+    border-color: var(--uw-brand-solid);
+    color: var(--uw-brand-fg);
+  }
+
+  .preset-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
   }
 
   input:disabled {
