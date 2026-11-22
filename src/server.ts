@@ -11,7 +11,7 @@ import {
 } from './middleware/http-security';
 import { refreshMediaTargets } from './services/jellyfin';
 import { JobQueueManager } from './services/queue';
-import { listDriveDirectories } from './services/rclone';
+import { createDriveDirectory, listDriveDirectories } from './services/rclone';
 import { JobStore, verifyWritableDirectory } from './services/store';
 import { SystemStatsCollector } from './services/system-stats';
 import type { CreateJobsRequest, Job } from './types';
@@ -93,6 +93,20 @@ export async function buildApp(opts: BuildAppOptions): Promise<{
       }
     },
   );
+
+  app.post<{ Body: { path?: string } }>('/api/folders', async (request, reply) => {
+    try {
+      const rawPath = typeof request.body?.path === 'string' ? request.body.path : '';
+      const created = await createDriveDirectory(config, rawPath);
+      return reply.code(201).send({
+        root: config.rcloneRoot,
+        path: created.path,
+        remoteTarget: created.remoteTarget,
+      });
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
 
   app.get('/api/jobs', async () => ({
     jobs: queue.listJobs(),

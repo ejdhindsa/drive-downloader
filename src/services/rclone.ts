@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import type { AppConfig } from '../config';
 import type { CustomHeader, JobProgress } from '../types';
 import { attachAbortKill } from '../utils/process';
+import { sanitizeRelativePath } from '../utils/security';
 
 const execFileAsync = promisify(execFile);
 
@@ -55,6 +56,40 @@ export async function listDriveDirectories(
   });
 
   return folders;
+}
+
+export function buildCreateDirectoryTarget(
+  rcloneRoot: string,
+  relativePath: string,
+): { sanitizedPath: string; remoteTarget: string } {
+  const sanitizedPath = sanitizeRelativePath(relativePath);
+  if (!sanitizedPath) {
+    throw new Error('Folder path cannot be empty');
+  }
+  const cleanRoot = rcloneRoot.replace(/\/+$/, '');
+  return {
+    sanitizedPath,
+    remoteTarget: `${cleanRoot}/${sanitizedPath}`,
+  };
+}
+
+export async function createDriveDirectory(
+  config: AppConfig,
+  relativePath: string,
+): Promise<{ path: string; remoteTarget: string }> {
+  const { sanitizedPath, remoteTarget } = buildCreateDirectoryTarget(
+    config.rcloneRoot,
+    relativePath,
+  );
+
+  await execFileAsync(
+    'rclone',
+    ['--config', config.rcloneConfig, 'mkdir', remoteTarget],
+    { timeout: 25_000, maxBuffer: 512 * 1024 },
+  );
+
+  clearFolderCache();
+  return { path: sanitizedPath, remoteTarget };
 }
 
 interface RcloneStatsTransfer {
