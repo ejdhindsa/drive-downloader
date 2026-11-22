@@ -257,4 +257,66 @@ describe('safeFetch, resolveSafeUrl, and readBoundedText', () => {
     );
     await expect(readBoundedText(streamed, 64)).rejects.toThrow(/exceeds maximum allowed size/);
   });
+
+  it('passes POST body and converts 303 redirect to GET without body', async () => {
+    const calls: Array<{ url: string; method?: string; body?: unknown; headers?: Record<string, string> }> = [];
+    const mockFetch: typeof fetch = async (input, init) => {
+      const url = String(input);
+      calls.push({
+        url,
+        method: init?.method,
+        body: init?.body,
+        headers: (init?.headers as Record<string, string>) ?? {},
+      });
+      if (url === 'https://api.example.com/submit') {
+        return new Response(null, {
+          status: 303,
+          headers: { location: 'https://api.example.com/result' },
+        });
+      }
+      return new Response('done', { status: 200 });
+    };
+
+    const res = await safeFetch('https://api.example.com/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': '7' },
+      body: 'foo=bar',
+      lookupFn: publicDns,
+      fetchFn: mockFetch,
+    });
+
+    expect(res.finalUrl).toBe('https://api.example.com/result');
+    expect(res.redirectCount).toBe(1);
+    expect(calls[0]).toEqual({
+      url: 'https://api.example.com/submit',
+      method: 'POST',
+      body: 'foo=bar',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': '7' },
+    });
+    expect(calls[1]).toEqual({
+      url: 'https://api.example.com/result',
+      method: 'GET',
+      body: undefined,
+      headers: {},
+    });
+  });
+
+  it('returns redirect response directly when followRedirects is false', async () => {
+    const mockFetch: typeof fetch = async () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: 'https://cdn.example.com/target.bin' },
+      });
+
+    const res = await safeFetch('https://host.example.com/dl', {
+      followRedirects: false,
+      lookupFn: publicDns,
+      fetchFn: mockFetch,
+    });
+
+    expect(res.response.status).toBe(302);
+    expect(res.response.headers.get('location')).toBe('https://cdn.example.com/target.bin');
+    expect(res.redirectCount).toBe(0);
+    await res.response.body?.cancel().catch(() => {});
+  });
 });

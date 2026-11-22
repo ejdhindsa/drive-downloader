@@ -290,6 +290,8 @@ export function redactJobForOutput(job: Job): Job {
 export interface SafeFetchOptions {
   method?: string;
   headers?: CustomHeader[] | Record<string, string>;
+  body?: string;
+  followRedirects?: boolean;
   signal?: AbortSignal;
   maxRedirects?: number;
   timeoutMs?: number;
@@ -326,10 +328,23 @@ function stripCrossOriginSensitiveHeaders(headers: Record<string, string>): Reco
   return next;
 }
 
+function stripBodyHeaders(headers: Record<string, string>): Record<string, string> {
+  const next: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    const lower = k.toLowerCase();
+    if (lower !== 'content-length' && lower !== 'content-type') {
+      next[k] = v;
+    }
+  }
+  return next;
+}
+
 export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Promise<SafeFetchResult> {
   const maxRedirects = opts.maxRedirects ?? 10;
   const timeoutMs = opts.timeoutMs ?? 15_000;
-  const method = opts.method ?? 'GET';
+  const followRedirects = opts.followRedirects ?? true;
+  let currentMethod = opts.method ?? 'GET';
+  let currentBody = opts.body;
   let currentUrl = (await validatePublicUrl(rawUrl, opts.lookupFn)).toString();
   let currentHeaders = buildRequestHeaders(opts.headers);
 
@@ -339,11 +354,14 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
   for (let redirects = 0; redirects <= maxRedirects; redirects += 1) {
     let response: Response;
     const init: RequestInit = {
-      method,
+      method: currentMethod,
       headers: currentHeaders,
       redirect: 'manual',
       signal: combinedSignal,
     };
+    if (currentBody !== undefined) {
+      init.body = currentBody;
+    }
 
     if (opts.fetchFn) {
       response = await opts.fetchFn(currentUrl, init);
@@ -358,6 +376,14 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
 
     const location = response.headers.get('location');
     if (REDIRECT_STATUS_CODES.has(response.status) && location) {
+      if (!followRedirects) {
+        return {
+          response,
+          finalUrl: currentUrl,
+          redirectCount: redirects,
+        };
+      }
+
       await response.body?.cancel().catch(() => {});
 
       if (redirects === maxRedirects) {
@@ -370,6 +396,17 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
 
       if (validated.origin !== prevOrigin) {
         currentHeaders = stripCrossOriginSensitiveHeaders(currentHeaders);
+      }
+
+      const upperMethod = currentMethod.toUpperCase();
+      if (
+        (response.status === 301 || response.status === 302 || response.status === 303) &&
+        upperMethod !== 'GET' &&
+        upperMethod !== 'HEAD'
+      ) {
+        currentMethod = 'GET';
+        currentBody = undefined;
+        currentHeaders = stripBodyHeaders(currentHeaders);
       }
 
       currentUrl = validated.toString();
