@@ -1,5 +1,6 @@
 import type {
   AppConfigResponse,
+  CreateFolderResponse,
   CreateJobsPayload,
   FoldersResponse,
   Job,
@@ -45,6 +46,14 @@ export function fetchFolders(path = '', refresh = false): Promise<FoldersRespons
   if (refresh) params.set('refresh', '1');
   const query = params.toString();
   return requestJson<FoldersResponse>(`/api/folders${query ? `?${query}` : ''}`);
+}
+
+export function createFolder(path: string): Promise<CreateFolderResponse> {
+  return requestJson<CreateFolderResponse>('/api/folders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
 }
 
 export async function fetchJobs(): Promise<Job[]> {
