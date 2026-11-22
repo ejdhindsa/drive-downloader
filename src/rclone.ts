@@ -84,9 +84,25 @@ export interface RcloneTransferCallbacks {
   onLog: (line: string) => void;
 }
 
+/** Builds a child process environment with HTTP/HTTPS proxy variables set. */
+export function buildProxyEnv(
+  proxyUrl: string | undefined,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv | undefined {
+  if (!proxyUrl) return undefined;
+  return {
+    ...baseEnv,
+    HTTP_PROXY: proxyUrl,
+    HTTPS_PROXY: proxyUrl,
+    http_proxy: proxyUrl,
+    https_proxy: proxyUrl,
+  };
+}
+
 function spawnRcloneWithStats(
   args: string[],
   callbacks: RcloneTransferCallbacks,
+  env?: NodeJS.ProcessEnv,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     if (callbacks.signal.aborted) {
@@ -94,7 +110,7 @@ function spawnRcloneWithStats(
       return;
     }
 
-    const child = spawn('rclone', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('rclone', args, { stdio: ['ignore', 'pipe', 'pipe'], env });
     const abortHandle = attachAbortKill(child, callbacks.signal);
     let lastErrorLine = '';
 
@@ -181,6 +197,7 @@ export async function runRcloneCopyUrl(
     destRemoteDir: string;
     customFilename?: string;
     headers: CustomHeader[];
+    proxyUrl?: string;
   },
   callbacks: RcloneTransferCallbacks,
 ): Promise<void> {
@@ -207,7 +224,8 @@ export async function runRcloneCopyUrl(
     'NOTICE',
   );
 
-  await spawnRcloneWithStats(args, callbacks);
+  const proxyEnv = buildProxyEnv(opts.proxyUrl ?? config.downloadProxy);
+  await spawnRcloneWithStats(args, callbacks, proxyEnv);
   clearFolderCache();
 }
 
