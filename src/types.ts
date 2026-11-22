@@ -1,5 +1,7 @@
 export type TransferMode = 'staged' | 'direct';
 
+export type ConflictPolicy = 'skip' | 'overwrite' | 'rename';
+
 export type JobStatus =
   | 'queued'
   | 'paused'
@@ -32,6 +34,7 @@ export interface Job {
   customFilename?: string;
   resolvedFilename?: string;
   mode: TransferMode;
+  conflictPolicy?: ConflictPolicy;
   autoExtract: boolean;
   autoRefreshJellyfin: boolean;
   priority?: number;
@@ -53,7 +56,9 @@ export interface CreateJobsRequest {
   newSubfolder?: string;
   customFilename?: string;
   mode: TransferMode;
+  conflictPolicy?: ConflictPolicy;
   autoExtract: boolean;
+  archivePassword?: string;
   autoRefreshJellyfin: boolean;
   headers?: CustomHeader[];
 }

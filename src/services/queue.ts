@@ -24,7 +24,7 @@ import {
   sanitizeRelativePath,
   validatePublicUrl,
 } from '../utils/security';
-import { detectArchiveFormat, extractArchive } from './extractor';
+import { detectArchiveFormat, extractArchive, sanitizeArchivePassword } from './extractor';
 import { refreshMediaTargets } from './jellyfin';
 import { assertNoSkippedFiles, runRcloneCopyUrl, runRcloneMove } from './rclone';
 import {
@@ -166,8 +166,9 @@ export class JobQueueManager extends EventEmitter {
   private readonly activeControllers = new Map<string, AbortController>();
   private readonly activeRuns = new Set<Promise<void>>();
   private readonly lastEmitAt = new Map<string, number>();
-  // Keep raw sensitive headers in memory only; job.headers always holds redacted copies.
+  // Keep raw sensitive headers and archive passwords in memory only.
   private readonly liveHeaders = new Map<string, CustomHeader[]>();
+  private readonly livePasswords = new Map<string, string>();
   private readonly pausedIds = new Set<string>();
   private readonly resumeStagingDirs = new Map<string, string>();
   private prioritySeq = 1;
@@ -228,7 +229,12 @@ export class JobQueueManager extends EventEmitter {
 
     const rawHeaders = sanitizeHeaders(req.headers);
     const redactedHeaders = redactHeaders(rawHeaders);
+    const archivePassword = sanitizeArchivePassword(req.archivePassword);
     const mode = req.mode === 'direct' ? 'direct' : 'staged';
+    const conflictPolicy =
+      req.conflictPolicy === 'overwrite' || req.conflictPolicy === 'rename'
+        ? req.conflictPolicy
+        : 'skip';
     if (mode === 'direct' && rawHeaders.length > 0) {
       throw new Error(
         'Custom HTTP headers are only supported in Staged mode (rclone copyurl applies --header globally to Google Drive API requests)',
@@ -253,6 +259,9 @@ export class JobQueueManager extends EventEmitter {
       if (rawHeaders.length > 0) {
         this.liveHeaders.set(id, rawHeaders);
       }
+      if (archivePassword && autoExtract) {
+        this.livePasswords.set(id, archivePassword);
+      }
       return {
         id,
         url,
@@ -262,6 +271,7 @@ export class JobQueueManager extends EventEmitter {
         customFilename,
         resolvedFilename: customFilename || guessNameFromUrl(url),
         mode,
+        conflictPolicy,
         autoExtract,
         autoRefreshJellyfin,
         headers: redactedHeaders,
@@ -292,6 +302,7 @@ export class JobQueueManager extends EventEmitter {
       job.priority = undefined;
       job.finishedAt = new Date().toISOString();
       this.liveHeaders.delete(id);
+      this.livePasswords.delete(id);
       this.pausedIds.delete(id);
       this.resumeStagingDirs.delete(id);
       await this.removeJobStagingDirs(id);
@@ -416,6 +427,7 @@ export class JobQueueManager extends EventEmitter {
         job.priority = undefined;
         job.finishedAt = now;
         this.liveHeaders.delete(job.id);
+        this.livePasswords.delete(job.id);
         this.pausedIds.delete(job.id);
         this.resumeStagingDirs.delete(job.id);
         await this.removeJobStagingDirs(job.id);
@@ -484,6 +496,7 @@ export class JobQueueManager extends EventEmitter {
     }
     this.jobs = this.jobs.filter((j) => j.id !== id);
     this.liveHeaders.delete(id);
+    this.livePasswords.delete(id);
     this.resumeStagingDirs.delete(id);
     await this.removeJobStagingDirs(id);
     await this.store.save(this.jobs);
@@ -497,6 +510,7 @@ export class JobQueueManager extends EventEmitter {
       this.jobs = this.jobs.filter(keepJob);
       for (const removed of removedJobs) {
         this.liveHeaders.delete(removed.id);
+        this.livePasswords.delete(removed.id);
         this.resumeStagingDirs.delete(removed.id);
       }
       await Promise.all(removedJobs.map((j) => this.removeJobStagingDirs(j.id)));
@@ -648,6 +662,7 @@ export class JobQueueManager extends EventEmitter {
           };
           job.finishedAt = new Date().toISOString();
           this.liveHeaders.delete(job.id);
+          this.livePasswords.delete(job.id);
           this.appendLog(job, `Completed -> ${job.destinationRemote}`);
         } else if (outcome.status === 'cancelled') {
           job.status = 'cancelled';
@@ -655,6 +670,7 @@ export class JobQueueManager extends EventEmitter {
           job.error = undefined;
           job.finishedAt = new Date().toISOString();
           this.liveHeaders.delete(job.id);
+          this.livePasswords.delete(job.id);
           this.appendLog(job, 'Job cancelled');
         } else {
           job.status = 'failed';
@@ -697,6 +713,7 @@ export class JobQueueManager extends EventEmitter {
         url: safeUrl,
         destRemoteDir: job.destinationRemote,
         customFilename: job.customFilename,
+        conflictPolicy: job.conflictPolicy,
         headers: this.getExecutionHeaders(job),
         proxyUrl: this.config.downloadProxy,
       },
@@ -802,6 +819,7 @@ export class JobQueueManager extends EventEmitter {
           maxExtractBytes: this.config.maxExtractBytes,
           freeDiskBytes: postDownloadDisk.freeBytes,
           minFreeDiskBytes: this.config.minFreeDiskBytes,
+          password: this.livePasswords.get(job.id),
         },
       );
 
@@ -826,6 +844,7 @@ export class JobQueueManager extends EventEmitter {
       {
         localDir: uploadSourceDir,
         destRemoteDir: job.destinationRemote,
+        conflictPolicy: job.conflictPolicy,
       },
       {
         signal,

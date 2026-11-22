@@ -23,6 +23,15 @@ export interface ArchiveExtractionLimits {
   freeDiskBytes?: number;
   minFreeDiskBytes?: number;
   maxCompressionRatio?: number;
+  password?: string;
+}
+
+export function sanitizeArchivePassword(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  if (/[\r\n\0]/.test(raw) || raw.length > 512) {
+    throw new Error('Archive password contains invalid control characters or exceeds 512 characters');
+  }
+  return raw;
 }
 
 export function detectArchiveFormat(filename: string): ArchiveFormat | null {
@@ -314,7 +323,10 @@ async function inspectArchiveEntries(
   archivePath: string,
   format: ArchiveFormat,
   signal: AbortSignal,
+  password?: string,
 ): Promise<ArchiveEntryInfo[]> {
+  const pwArgs = password ? [`-p${password}`] : [];
+
   if (format === 'tar') {
     const output = await runCommandCapture('tar', ['-tvf', archivePath], signal);
     return parseTarListing(output);
@@ -323,29 +335,31 @@ async function inspectArchiveEntries(
   if (format === 'zip') {
     try {
       const bin7z = await resolve7zBinary();
-      const output = await runCommandCapture(bin7z, ['l', '-slt', archivePath], signal);
+      const output = await runCommandCapture(bin7z, ['l', '-slt', ...pwArgs, archivePath], signal);
       return parse7zListing(output);
     } catch (err) {
-      if (signal.aborted) throw err;
+      if (signal.aborted || password) throw err;
       const output = await runCommandCapture('unzip', ['-l', archivePath], signal);
       return parseUnzipListing(output);
     }
   }
 
   if (format === 'rar') {
-    try {
-      const output = await runCommandCapture('bsdtar', ['-tvf', archivePath], signal);
-      return parseTarListing(output);
-    } catch (err) {
-      if (signal.aborted) throw err;
-      const bin7z = await resolve7zBinary();
-      const output = await runCommandCapture(bin7z, ['l', '-slt', archivePath], signal);
-      return parse7zListing(output);
+    if (!password) {
+      try {
+        const output = await runCommandCapture('bsdtar', ['-tvf', archivePath], signal);
+        return parseTarListing(output);
+      } catch (err) {
+        if (signal.aborted) throw err;
+      }
     }
+    const bin7z = await resolve7zBinary();
+    const output = await runCommandCapture(bin7z, ['l', '-slt', ...pwArgs, archivePath], signal);
+    return parse7zListing(output);
   }
 
   const bin7z = await resolve7zBinary();
-  const output = await runCommandCapture(bin7z, ['l', '-slt', archivePath], signal);
+  const output = await runCommandCapture(bin7z, ['l', '-slt', ...pwArgs, archivePath], signal);
   return parse7zListing(output);
 }
 
@@ -403,8 +417,9 @@ export async function extractArchive(
     throw new Error(`Unsupported archive format: ${path.basename(archivePath)}`);
   }
 
+  const password = sanitizeArchivePassword(limits.password);
   const stat = await fs.stat(archivePath);
-  const entries = await inspectArchiveEntries(archivePath, format, signal);
+  const entries = await inspectArchiveEntries(archivePath, format, signal, password);
   const preflight = validateArchivePreflight({
     entries,
     archiveSizeBytes: stat.size,
@@ -415,22 +430,34 @@ export async function extractArchive(
   );
 
   await fs.mkdir(destDir, { recursive: true });
+  const pwArgs = password ? [`-p${password}`] : [];
 
   if (format === 'zip') {
-    await runCommand('unzip', ['-q', '-o', archivePath, '-d', destDir], signal, onLog);
+    if (password) {
+      // 7zz handles both ZipCrypto and AES-256 encrypted zip archives.
+      const bin7z = await resolve7zBinary();
+      await runCommand(bin7z, ['x', '-y', ...pwArgs, `-o${destDir}`, archivePath], signal, onLog);
+    } else {
+      await runCommand('unzip', ['-q', '-o', archivePath, '-d', destDir], signal, onLog);
+    }
   } else if (format === 'tar') {
     await runCommand('tar', ['-xf', archivePath, '-C', destDir], signal, onLog);
   } else if (format === '7z') {
     const bin7z = await resolve7zBinary();
-    await runCommand(bin7z, ['x', '-y', `-o${destDir}`, archivePath], signal, onLog);
+    await runCommand(bin7z, ['x', '-y', ...pwArgs, `-o${destDir}`, archivePath], signal, onLog);
   } else if (format === 'rar') {
-    try {
-      await runCommand('bsdtar', ['-xf', archivePath, '-C', destDir], signal, onLog);
-    } catch (err) {
-      if (signal.aborted) throw err;
-      onLog('bsdtar failed on .rar, trying 7z...');
+    if (password) {
       const bin7z = await resolve7zBinary();
-      await runCommand(bin7z, ['x', '-y', `-o${destDir}`, archivePath], signal, onLog);
+      await runCommand(bin7z, ['x', '-y', ...pwArgs, `-o${destDir}`, archivePath], signal, onLog);
+    } else {
+      try {
+        await runCommand('bsdtar', ['-xf', archivePath, '-C', destDir], signal, onLog);
+      } catch (err) {
+        if (signal.aborted) throw err;
+        onLog('bsdtar failed on .rar, trying 7z...');
+        const bin7z = await resolve7zBinary();
+        await runCommand(bin7z, ['x', '-y', `-o${destDir}`, archivePath], signal, onLog);
+      }
     }
   }
 

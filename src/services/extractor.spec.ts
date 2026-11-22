@@ -10,6 +10,7 @@ import {
   parseTarListing,
   parseUnzipListing,
   resolve7zBinary,
+  sanitizeArchivePassword,
   sanitizeExtractedTree,
   validateArchivePreflight,
 } from './extractor';
@@ -24,6 +25,14 @@ describe('archive detection and binary resolution', () => {
     expect(detectArchiveFormat('pack.tar.gz')).toBe('tar');
     expect(detectArchiveFormat('pack.TGZ')).toBe('tar');
     expect(detectArchiveFormat('Movie.mkv')).toBeNull();
+  });
+
+  it('validates optional archive passwords against control characters', () => {
+    expect(sanitizeArchivePassword(undefined)).toBeUndefined();
+    expect(sanitizeArchivePassword('')).toBeUndefined();
+    expect(sanitizeArchivePassword('s3cr3t!pass')).toBe('s3cr3t!pass');
+    expect(() => sanitizeArchivePassword('bad\npass')).toThrow(/invalid control characters/);
+    expect(() => sanitizeArchivePassword('bad\0pass')).toThrow(/invalid control characters/);
   });
 
   it('resolves 7zz or 7z from PATH and throws clearly when missing', async () => {

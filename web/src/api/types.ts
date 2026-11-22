@@ -1,5 +1,7 @@
 export type TransferMode = 'staged' | 'direct';
 
+export type ConflictPolicy = 'skip' | 'overwrite' | 'rename';
+
 export type JobStatus =
   | 'queued'
   | 'paused'
@@ -106,7 +108,9 @@ export interface CreateJobsPayload {
   newSubfolder?: string;
   customFilename?: string;
   mode: TransferMode;
+  conflictPolicy?: ConflictPolicy;
   autoExtract: boolean;
+  archivePassword?: string;
   autoRefreshJellyfin: boolean;
   headers?: CustomHeader[];
 }
