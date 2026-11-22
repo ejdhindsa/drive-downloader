@@ -694,4 +694,45 @@ describe('JobQueueManager concurrency, cancellation, retry, and redaction', () =
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('validates and persists ytDlpFormat on staged jobs', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'drive-dl-ytdlp-fmt-'));
+    try {
+      const config = makeTestConfig(tmpDir, 1);
+      const store = new JobStore(config.dataDir);
+      const queue = new JobQueueManager(config, store);
+      await queue.init();
+
+      const internals = queue as unknown as {
+        executeStagedTransfer: () => Promise<void>;
+      };
+      internals.executeStagedTransfer = async () => {};
+
+      const [job] = await queue.enqueueJobs({
+        urls: ['https://93.184.216.34/video'],
+        folder: 'Movies',
+        mode: 'staged',
+        ytDlpFormat: 'audio-mp3',
+        autoExtract: false,
+        autoRefreshJellyfin: false,
+      });
+
+      expect(job.ytDlpFormat).toBe('audio-mp3');
+
+      await expect(
+        queue.enqueueJobs({
+          urls: ['https://93.184.216.34/video'],
+          folder: 'Movies',
+          mode: 'staged',
+          ytDlpFormat: 'invalid-preset' as unknown as 'best-mp4',
+          autoExtract: false,
+          autoRefreshJellyfin: false,
+        }),
+      ).rejects.toThrow(/Invalid yt-dlp format preset/);
+
+      await queue.shutdown();
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

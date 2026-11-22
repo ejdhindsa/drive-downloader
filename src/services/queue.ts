@@ -39,6 +39,7 @@ import {
   trimJobHistory,
   verifyWritableDirectory,
 } from './store';
+import { runYtDlpDownload, sanitizeYtDlpFormat } from './ytdlp';
 
 function parseSizeToBytes(rawValue: string, unit: string): number {
   const num = Number.parseFloat(rawValue);
@@ -279,6 +280,7 @@ export class JobQueueManager extends EventEmitter {
       req.conflictPolicy === 'overwrite' || req.conflictPolicy === 'rename'
         ? req.conflictPolicy
         : 'skip';
+    const ytDlpFormat = mode === 'staged' ? sanitizeYtDlpFormat(req.ytDlpFormat) : undefined;
     if (mode === 'direct' && rawHeaders.length > 0) {
       throw new Error(
         'Custom HTTP headers are only supported in Staged mode (rclone copyurl applies --header globally to Google Drive API requests)',
@@ -327,6 +329,7 @@ export class JobQueueManager extends EventEmitter {
         resolvedFilename: jobCustomFilename || entry.groupName || guessNameFromUrl(url),
         mode,
         conflictPolicy,
+        ytDlpFormat,
         autoExtract,
         autoRefreshJellyfin,
         headers: redactedHeaders,
@@ -772,6 +775,9 @@ export class JobQueueManager extends EventEmitter {
       );
     }
     job.resolverName = target.hoster;
+    if (target.engine === 'yt-dlp') {
+      throw new Error('Video/audio platform downloads via yt-dlp require Staged mode');
+    }
     if (!job.customFilename && target.filename) {
       job.resolvedFilename = target.filename;
     }
@@ -877,20 +883,32 @@ export class JobQueueManager extends EventEmitter {
       const partHeaders = mergeExecutionHeaders(executionHeaders, target.headers);
       const partFilename = isMultiPart ? target.filename : job.customFilename || target.filename;
 
-      job.status = 'downloading';
-      job.phaseLabel = isMultiPart
-        ? `Downloading part ${i + 1}/${urlsToDownload.length} (aria2c 16x)`
-        : 'Downloading to VPS (aria2c 16x)';
-      job.progress = defaultProgress();
-      this.appendLog(
-        job,
-        isMultiPart
-          ? `Starting aria2c download for part ${i + 1}/${urlsToDownload.length}...`
-          : 'Starting aria2c multi-connection download...',
-      );
-      this.emitJob(job, true);
+      if (target.engine === 'yt-dlp') {
+        job.status = 'downloading';
+        job.phaseLabel = isMultiPart
+          ? `Downloading part ${i + 1}/${urlsToDownload.length} (yt-dlp)`
+          : 'Downloading media (yt-dlp)';
+        job.progress = defaultProgress();
+        this.appendLog(job, `Starting yt-dlp download (${job.ytDlpFormat ?? 'best-mp4'})...`);
+        this.emitJob(job, true);
 
-      await this.runAria2c(job, target.downloadUrl, partHeaders, jobStagingDir, signal, partFilename);
+        await this.runYtDlp(job, target.downloadUrl, partHeaders, jobStagingDir, signal, partFilename);
+      } else {
+        job.status = 'downloading';
+        job.phaseLabel = isMultiPart
+          ? `Downloading part ${i + 1}/${urlsToDownload.length} (aria2c 16x)`
+          : 'Downloading to VPS (aria2c 16x)';
+        job.progress = defaultProgress();
+        this.appendLog(
+          job,
+          isMultiPart
+            ? `Starting aria2c download for part ${i + 1}/${urlsToDownload.length}...`
+            : 'Starting aria2c multi-connection download...',
+        );
+        this.emitJob(job, true);
+
+        await this.runAria2c(job, target.downloadUrl, partHeaders, jobStagingDir, signal, partFilename);
+      }
     }
 
     const downloadedEntries = (await fs.readdir(jobStagingDir)).filter(
@@ -993,6 +1011,41 @@ export class JobQueueManager extends EventEmitter {
     );
 
     await assertNoSkippedFiles(uploadSourceDir, job.destinationRemote);
+  }
+
+  private async runYtDlp(
+    job: Job,
+    mediaUrl: string,
+    headers: CustomHeader[],
+    stagingDir: string,
+    signal: AbortSignal,
+    overrideFilename?: string,
+  ): Promise<void> {
+    await runYtDlpDownload(
+      {
+        url: mediaUrl,
+        outputDir: stagingDir,
+        format: job.ytDlpFormat,
+        customFilename: overrideFilename ?? job.customFilename,
+        proxyUrl: this.config.downloadProxy,
+        headers,
+      },
+      {
+        signal,
+        onProgress: (progress) => {
+          job.progress = progress;
+          this.emitJob(job);
+        },
+        onFilename: (filename) => {
+          job.resolvedFilename = filename;
+          this.emitJob(job, true);
+        },
+        onLog: (line) => {
+          this.appendLog(job, line);
+          this.emitJob(job);
+        },
+      },
+    );
   }
 
   private runAria2c(

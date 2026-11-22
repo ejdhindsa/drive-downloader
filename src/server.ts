@@ -14,6 +14,7 @@ import { JobQueueManager } from './services/queue';
 import { createDriveDirectory, listDriveDirectories } from './services/rclone';
 import { JobStore, verifyWritableDirectory } from './services/store';
 import { SystemStatsCollector } from './services/system-stats';
+import { isYtDlpAvailable } from './services/ytdlp';
 import type { CreateJobsRequest, InspectRequest, InspectResponse, Job } from './types';
 import { sanitizeHeaders, sanitizeRelativePath } from './utils/security';
 
@@ -54,6 +55,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<{
   }
 
   const statsCollector = new SystemStatsCollector(config);
+  const ytDlpAvailable = await isYtDlpAvailable();
 
   app.get('/api/health', async () => ({ ok: true }));
 
@@ -69,6 +71,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<{
       jellyfinConfigured: Boolean(config.jellyfinUrl && config.jellyfinApiKey),
       rcloneRcConfigured: Boolean(config.rcloneRcUrl),
       proxyConfigured: Boolean(config.downloadProxy),
+      ytDlpAvailable,
       maxConcurrentJobs: config.maxConcurrentJobs,
       minFreeDiskBytes: config.minFreeDiskBytes,
       maxExtractBytes: config.maxExtractBytes,

@@ -9,6 +9,7 @@ import { huggingfaceResolver } from './huggingface';
 import { mediafireResolver } from './mediafire';
 import { onefichierResolver } from './onefichier';
 import { pixeldrainResolver } from './pixeldrain';
+import { ytDlpResolver } from './ytdlp';
 
 export const BUILTIN_HOSTER_RESOLVERS: UrlResolver[] = [
   pixeldrainResolver,
@@ -21,6 +22,7 @@ export const BUILTIN_HOSTER_RESOLVERS: UrlResolver[] = [
   archiveOrgResolver,
   buzzheavierResolver,
   onefichierResolver,
+  ytDlpResolver,
 ];
 
 export {
@@ -34,4 +36,5 @@ export {
   mediafireResolver,
   onefichierResolver,
   pixeldrainResolver,
+  ytDlpResolver,
 };
