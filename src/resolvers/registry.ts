@@ -1,6 +1,7 @@
 import type { ResolvedTarget } from '../types';
 import { sanitizeFilename, sanitizeHeaders, validatePublicUrl } from '../utils/security';
 import { directResolver } from './direct';
+import { BUILTIN_HOSTER_RESOLVERS } from './hosters';
 import type { ResolverContext, UrlResolver } from './types';
 
 export interface ResolveUrlResult {
@@ -126,6 +127,12 @@ export class ResolverRegistry {
   }
 }
 
-export function createResolverRegistry(customResolvers: UrlResolver[] = []): ResolverRegistry {
-  return new ResolverRegistry(customResolvers);
+export function createResolverRegistry(
+  customResolvers: UrlResolver[] = [],
+  includeBuiltins = true,
+): ResolverRegistry {
+  const combined = includeBuiltins
+    ? [...customResolvers, ...BUILTIN_HOSTER_RESOLVERS]
+    : [...customResolvers];
+  return new ResolverRegistry(combined);
 }

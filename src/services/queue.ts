@@ -746,6 +746,12 @@ export class JobQueueManager extends EventEmitter {
       },
     });
     const target = resolved.items[0];
+    if (resolved.items.length > 1) {
+      this.appendLog(
+        job,
+        `Resolver returned ${resolved.items.length} files; downloading first item (${target.filename || target.downloadUrl}). Use Inspect to expand multi-file links.`,
+      );
+    }
     job.resolverName = target.hoster;
     if (!job.customFilename && target.filename) {
       job.resolvedFilename = target.filename;
@@ -838,6 +844,12 @@ export class JobQueueManager extends EventEmitter {
         },
       });
       const target = resolved.items[0];
+      if (resolved.items.length > 1) {
+        this.appendLog(
+          job,
+          `Resolver returned ${resolved.items.length} files; downloading first item (${target.filename || target.downloadUrl}). Use Inspect to expand multi-file links.`,
+        );
+      }
       job.resolverName = target.hoster;
       if (!isMultiPart && !job.customFilename && target.filename) {
         job.resolvedFilename = target.filename;

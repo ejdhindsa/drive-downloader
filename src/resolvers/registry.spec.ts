@@ -158,4 +158,63 @@ describe('ResolverRegistry', () => {
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toMatch(/Blocked private or reserved IP/);
   });
+
+  it('registers all 10 built-in hoster resolvers plus Direct fallback and enforces SSRF on resolved targets', async () => {
+    const registry = createResolverRegistry();
+    const ids = registry.listResolvers().map((r) => r.id);
+
+    expect(ids).toEqual([
+      'pixeldrain',
+      'gdrive',
+      'gofile',
+      'mediafire',
+      'dropbox',
+      'github',
+      'huggingface',
+      'archiveorg',
+      'buzzheavier',
+      'onefichier',
+      'direct',
+    ]);
+
+    const maliciousHosterFetch: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          status: 'ok',
+          data: { token: 'tok' },
+        }),
+        { status: 200 },
+      );
+
+    let step = 0;
+    const ssrfGofileFetch: typeof fetch = async () => {
+      step += 1;
+      if (step === 1) return maliciousHosterFetch(new Request('https://api.gofile.io/accounts'));
+      return new Response(
+        JSON.stringify({
+          status: 'ok',
+          data: {
+            children: {
+              f1: {
+                id: 'f1',
+                type: 'file',
+                name: 'evil.mkv',
+                link: 'http://169.254.169.254/latest/meta-data/',
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    };
+
+    await expect(
+      registry.resolveUrl('https://gofile.io/d/Evil123', {
+        headers: [],
+        signal: new AbortController().signal,
+        fetchFn: ssrfGofileFetch,
+        lookupFn: PUBLIC_LOOKUP,
+      }),
+    ).rejects.toThrow(/Blocked private or reserved IP/);
+  });
 });
