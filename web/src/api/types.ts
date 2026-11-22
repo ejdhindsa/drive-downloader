@@ -110,6 +110,7 @@ export interface CreateJobsPayload {
   existingSubfolder?: string;
   newSubfolder?: string;
   customFilename?: string;
+  customFilenames?: Record<string, string>;
   mode: TransferMode;
   conflictPolicy?: ConflictPolicy;
   autoExtract: boolean;
@@ -124,6 +125,8 @@ export interface RefreshResponse {
   messages: string[];
 }
 
+export type FileCategory = 'video' | 'archive' | 'audio' | 'book' | 'other';
+
 export interface ResolvedTarget {
   downloadUrl: string;
   filename?: string;
@@ -131,6 +134,7 @@ export interface ResolvedTarget {
   mimeType?: string;
   sourceUrl?: string;
   hoster: string;
+  category?: FileCategory;
   note?: string;
 }
 

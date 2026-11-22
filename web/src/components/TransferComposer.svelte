@@ -8,6 +8,7 @@
   import { suggestMediaDestination } from '../utils/mediaHints';
   import FolderBrowser from './FolderBrowser.svelte';
   import HeadersEditor from './HeadersEditor.svelte';
+  import LinkPickerModal from './LinkPickerModal.svelte';
 
   const ADVANCED_STORAGE_KEY = 'drive-downloader:composer-advanced';
 
@@ -35,6 +36,9 @@
   let submitting = $state(false);
   let inspecting = $state(false);
   let inspectResult = $state<InspectResponse | null>(null);
+  let pickerOpen = $state(false);
+
+  let deepLinkHandled = false;
 
   $effect(() => {
     try {
@@ -242,12 +246,110 @@
         urls: parsedUrls,
         headers: activeHeaders.length > 0 ? activeHeaders : undefined,
       });
+      if (inspectResult.items.length > 1) {
+        pickerOpen = true;
+      }
     } catch (err) {
       toasts.push('danger', err instanceof Error ? err.message : 'Failed to inspect URLs');
     } finally {
       inspecting = false;
     }
   }
+
+  async function handleQueueSelected(selected: Array<{ url: string; customFilename?: string }>) {
+    if (selected.length === 0) return;
+    if (!topFolder) {
+      toasts.push('danger', 'Select or create a destination Drive folder inside Media/.');
+      return;
+    }
+
+    const activeHeaders = isDirect
+      ? []
+      : headers
+          .map((h) => ({ name: h.name.trim(), value: h.value.trim() }))
+          .filter((h) => h.name || h.value);
+
+    const customFilenames: Record<string, string> = {};
+    for (const item of selected) {
+      if (item.customFilename) {
+        customFilenames[item.url] = item.customFilename;
+      }
+    }
+
+    submitting = true;
+    try {
+      const jobs = await enqueueJobs({
+        urls: selected.map((s) => s.url),
+        customFilenames: Object.keys(customFilenames).length > 0 ? customFilenames : undefined,
+        folder: topFolder,
+        existingSubfolder: nestedSubfolder,
+        newSubfolder: newSubfolder.trim(),
+        mode,
+        conflictPolicy,
+        autoExtract: isDirect ? false : autoExtract,
+        archivePassword: !isDirect && autoExtract && archivePassword ? archivePassword : undefined,
+        autoRefreshJellyfin: transferStore.hasMediaRefresh ? autoRefreshJellyfin : false,
+        headers: activeHeaders,
+      });
+
+      pickerOpen = false;
+      rawUrls = '';
+      customFilename = '';
+      archivePassword = '';
+      inspectResult = null;
+      toasts.push(
+        'success',
+        `Queued ${jobs.length} ${jobs.length === 1 ? 'transfer' : 'transfers'}.`,
+      );
+    } catch (err) {
+      toasts.push('danger', err instanceof Error ? err.message : 'Failed to queue download');
+    } finally {
+      submitting = false;
+    }
+  }
+
+  $effect(() => {
+    if (deepLinkHandled || typeof window === 'undefined') return;
+    deepLinkHandled = true;
+
+    const params = new URLSearchParams(window.location.search);
+    const inspectCandidate =
+      params.get('inspect') ??
+      params.get('url') ??
+      extractUrlsFromText(params.get('text') ?? '')[0] ??
+      '';
+
+    if (inspectCandidate.trim()) {
+      try {
+        const parsed = new URL(inspectCandidate.trim());
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+          rawUrls = parsed.toString();
+          window.history.replaceState({}, '', window.location.pathname);
+          void handleInspect();
+          return;
+        }
+      } catch {
+        // Ignore invalid deep-link inspect URL.
+      }
+    }
+
+    const hash = window.location.hash;
+    const rawLinksParam = hash.startsWith('#links=')
+      ? decodeURIComponent(hash.slice('#links='.length))
+      : params.get('links');
+
+    if (rawLinksParam) {
+      const extracted = extractUrlsFromText(rawLinksParam).slice(0, 50);
+      if (extracted.length > 0) {
+        rawUrls = extracted.join('\n');
+        window.history.replaceState({}, '', window.location.pathname);
+        toasts.push(
+          'info',
+          `Loaded ${extracted.length} link(s) from bookmarklet. Review and click Inspect or Queue.`,
+        );
+      }
+    }
+  });
 
   async function handleSubmit(event?: SubmitEvent) {
     event?.preventDefault();
@@ -416,9 +518,20 @@
               </span>
             {/if}
           </div>
-          <button type="button" class="mini-btn" onclick={() => (inspectResult = null)}>
-            Dismiss
-          </button>
+          <div class="inspect-head-actions">
+            {#if inspectResult.items.length > 0}
+              <button
+                type="button"
+                class="mini-btn accent"
+                onclick={() => (pickerOpen = true)}
+              >
+                Pick &amp; Rename
+              </button>
+            {/if}
+            <button type="button" class="mini-btn" onclick={() => (inspectResult = null)}>
+              Dismiss
+            </button>
+          </div>
         </div>
 
         {#if inspectResult.items.length > 0}
@@ -663,6 +776,14 @@
   </form>
 </section>
 
+<LinkPickerModal
+  open={pickerOpen}
+  {inspectResult}
+  {submitting}
+  onClose={() => (pickerOpen = false)}
+  onQueueSelected={handleQueueSelected}
+/>
+
 <style>
   .composer-card {
     position: relative;
@@ -890,6 +1011,12 @@
     justify-content: space-between;
     gap: var(--uw-space-2);
     flex-wrap: wrap;
+  }
+
+  .inspect-head-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--uw-space-1);
   }
 
   .inspect-summary {

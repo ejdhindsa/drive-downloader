@@ -646,4 +646,52 @@ describe('JobQueueManager concurrency, cancellation, retry, and redaction', () =
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('assigns per-URL customFilenames for multi-URL batches and rejects traversal', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'drive-dl-pername-'));
+    try {
+      const config = makeTestConfig(tmpDir, 2);
+      const store = new JobStore(config.dataDir);
+      const queue = new JobQueueManager(config, store);
+      await queue.init();
+
+      const internals = queue as unknown as {
+        executeStagedTransfer: () => Promise<void>;
+      };
+      internals.executeStagedTransfer = async () => {};
+
+      const created = await queue.enqueueJobs({
+        urls: ['https://93.184.216.34/a.bin', 'https://93.184.216.34/b.bin'],
+        customFilenames: {
+          'https://93.184.216.34/a.bin': 'Renamed-A.mkv',
+        },
+        folder: 'Movies',
+        mode: 'staged',
+        autoExtract: false,
+        autoRefreshJellyfin: false,
+      });
+
+      expect(created[0].customFilename).toBe('Renamed-A.mkv');
+      expect(created[0].resolvedFilename).toBe('Renamed-A.mkv');
+      expect(created[1].customFilename).toBeUndefined();
+      expect(created[1].resolvedFilename).toBe('b.bin');
+
+      await expect(
+        queue.enqueueJobs({
+          urls: ['https://93.184.216.34/c.bin'],
+          customFilenames: {
+            'https://93.184.216.34/c.bin': '../escape.mkv',
+          },
+          folder: 'Movies',
+          mode: 'staged',
+          autoExtract: false,
+          autoRefreshJellyfin: false,
+        }),
+      ).rejects.toThrow(/cannot contain "\/"/);
+
+      await queue.shutdown();
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
