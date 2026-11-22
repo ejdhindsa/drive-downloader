@@ -6,9 +6,11 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import {
   detectArchiveFormat,
+  groupMultipartUrls,
   parse7zListing,
   parseTarListing,
   parseUnzipListing,
+  pickEntryArchiveFile,
   resolve7zBinary,
   sanitizeArchivePassword,
   sanitizeExtractedTree,
@@ -33,6 +35,56 @@ describe('archive detection and binary resolution', () => {
     expect(sanitizeArchivePassword('s3cr3t!pass')).toBe('s3cr3t!pass');
     expect(() => sanitizeArchivePassword('bad\npass')).toThrow(/invalid control characters/);
     expect(() => sanitizeArchivePassword('bad\0pass')).toThrow(/invalid control characters/);
+  });
+
+  it('groups multi-part archive URLs and orders parts numerically', () => {
+    const groups = groupMultipartUrls([
+      'https://cdn.example.com/Show.S01.part2.rar',
+      'https://cdn.example.com/standalone.mkv',
+      'https://cdn.example.com/Show.S01.part1.rar',
+      'https://cdn.example.com/Pack.7z.002',
+      'https://cdn.example.com/Pack.7z.001',
+      'https://cdn.example.com/Legacy.r00',
+      'https://cdn.example.com/Legacy.rar',
+      'https://cdn.example.com/Single.rar',
+    ]);
+
+    expect(groups).toEqual([
+      {
+        groupName: 'Show.S01.rar',
+        urls: [
+          'https://cdn.example.com/Show.S01.part1.rar',
+          'https://cdn.example.com/Show.S01.part2.rar',
+        ],
+      },
+      { urls: ['https://cdn.example.com/standalone.mkv'] },
+      {
+        groupName: 'Pack.7z',
+        urls: [
+          'https://cdn.example.com/Pack.7z.001',
+          'https://cdn.example.com/Pack.7z.002',
+        ],
+      },
+      {
+        groupName: 'Legacy.rar',
+        urls: [
+          'https://cdn.example.com/Legacy.rar',
+          'https://cdn.example.com/Legacy.r00',
+        ],
+      },
+      { urls: ['https://cdn.example.com/Single.rar'] },
+    ]);
+  });
+
+  it('picks the first volume as the extraction entry file', () => {
+    expect(pickEntryArchiveFile(['Show.part02.rar', 'Show.part01.rar', 'Show.part03.rar'])).toBe(
+      'Show.part01.rar',
+    );
+    expect(pickEntryArchiveFile(['Pack.7z.003', 'Pack.7z.001', 'Pack.7z.002'])).toBe('Pack.7z.001');
+    expect(pickEntryArchiveFile(['Old.r01', 'Old.r00', 'Old.rar'])).toBe('Old.rar');
+    expect(pickEntryArchiveFile(['Split.z01', 'Split.zip'])).toBe('Split.zip');
+    expect(detectArchiveFormat('Pack.7z.001')).toBe('7z');
+    expect(detectArchiveFormat('Pack.zip.001')).toBe('zip');
   });
 
   it('resolves 7zz or 7z from PATH and throws clearly when missing', async () => {

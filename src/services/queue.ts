@@ -24,7 +24,13 @@ import {
   sanitizeRelativePath,
   validatePublicUrl,
 } from '../utils/security';
-import { detectArchiveFormat, extractArchive, sanitizeArchivePassword } from './extractor';
+import {
+  extractArchive,
+  groupMultipartUrls,
+  type MultipartGroup,
+  pickEntryArchiveFile,
+  sanitizeArchivePassword,
+} from './extractor';
 import { refreshMediaTargets } from './jellyfin';
 import { assertNoSkippedFiles, runRcloneCopyUrl, runRcloneMove } from './rclone';
 import {
@@ -254,22 +260,30 @@ export class JobQueueManager extends EventEmitter {
     const destinationRemote = `${this.config.rcloneRoot}/${relDest}`;
     const now = new Date().toISOString();
 
-    const created: Job[] = validatedUrls.map((url) => {
+    const groupedEntries: MultipartGroup[] = autoExtract
+      ? groupMultipartUrls(validatedUrls)
+      : validatedUrls.map((url) => ({ urls: [url] }));
+
+    const created: Job[] = groupedEntries.map((entry) => {
       const id = crypto.randomUUID();
+      const url = entry.urls[0];
+      const partUrls = entry.urls.length > 1 ? entry.urls : undefined;
       if (rawHeaders.length > 0) {
         this.liveHeaders.set(id, rawHeaders);
       }
       if (archivePassword && autoExtract) {
         this.livePasswords.set(id, archivePassword);
       }
+      const modeDesc = partUrls ? `${mode} mode, ${partUrls.length}-part archive` : `${mode} mode`;
       return {
         id,
         url,
+        partUrls,
         folder,
         subfolder,
         destinationRemote,
         customFilename,
-        resolvedFilename: customFilename || guessNameFromUrl(url),
+        resolvedFilename: customFilename || entry.groupName || guessNameFromUrl(url),
         mode,
         conflictPolicy,
         autoExtract,
@@ -278,7 +292,7 @@ export class JobQueueManager extends EventEmitter {
         status: 'queued',
         phaseLabel: 'Queued',
         progress: defaultProgress(),
-        logs: [`[${now}] Queued (${mode} mode) -> ${destinationRemote}`],
+        logs: [`[${now}] Queued (${modeDesc}) -> ${destinationRemote}`],
         createdAt: now,
       };
     });
@@ -762,22 +776,35 @@ export class JobQueueManager extends EventEmitter {
     }
 
     const executionHeaders = this.getExecutionHeaders(job);
-    const safeUrl = await resolveSafeUrl(job.url, {
-      headers: executionHeaders,
-      signal,
-      proxyUrl: this.config.downloadProxy,
-    });
+    const urlsToDownload = job.partUrls && job.partUrls.length > 1 ? job.partUrls : [job.url];
+    const isMultiPart = urlsToDownload.length > 1;
 
     job.status = 'downloading';
-    job.phaseLabel = 'Downloading to VPS (aria2c 16x)';
-    job.progress = defaultProgress();
     if (this.config.downloadProxy) {
       this.appendLog(job, `Using proxy: ${redactProxyUrl(this.config.downloadProxy)}`);
     }
-    this.appendLog(job, 'Starting aria2c multi-connection download...');
-    this.emitJob(job, true);
 
-    await this.runAria2c(job, safeUrl, executionHeaders, jobStagingDir, signal);
+    for (let i = 0; i < urlsToDownload.length; i += 1) {
+      const safeUrl = await resolveSafeUrl(urlsToDownload[i], {
+        headers: executionHeaders,
+        signal,
+        proxyUrl: this.config.downloadProxy,
+      });
+
+      job.phaseLabel = isMultiPart
+        ? `Downloading part ${i + 1}/${urlsToDownload.length} (aria2c 16x)`
+        : 'Downloading to VPS (aria2c 16x)';
+      job.progress = defaultProgress();
+      this.appendLog(
+        job,
+        isMultiPart
+          ? `Starting aria2c download for part ${i + 1}/${urlsToDownload.length}...`
+          : 'Starting aria2c multi-connection download...',
+      );
+      this.emitJob(job, true);
+
+      await this.runAria2c(job, safeUrl, executionHeaders, jobStagingDir, signal);
+    }
 
     const downloadedEntries = (await fs.readdir(jobStagingDir)).filter(
       (name) => !name.endsWith('.aria2'),
@@ -786,17 +813,27 @@ export class JobQueueManager extends EventEmitter {
       throw new Error('aria2c finished but no file was found in staging directory');
     }
 
-    const primaryFile = downloadedEntries[0];
-    job.resolvedFilename = primaryFile;
+    const entryArchive = job.autoExtract ? pickEntryArchiveFile(downloadedEntries) : null;
+    if (!isMultiPart) {
+      job.resolvedFilename = downloadedEntries[0];
+    }
     let uploadSourceDir = jobStagingDir;
 
-    if (job.autoExtract && downloadedEntries.length === 1 && detectArchiveFormat(primaryFile)) {
-      const archivePath = path.join(jobStagingDir, primaryFile);
+    if (job.autoExtract && entryArchive && (downloadedEntries.length === 1 || isMultiPart)) {
+      const archivePath = path.join(jobStagingDir, entryArchive);
       const extractDir = path.join(jobStagingDir, 'extracted');
       const postDownloadDisk = await this.getDiskStatus();
 
+      let totalArchiveSizeBytes = 0;
+      for (const file of downloadedEntries) {
+        const st = await fs.stat(path.join(jobStagingDir, file));
+        if (st.isFile()) totalArchiveSizeBytes += st.size;
+      }
+
       job.status = 'extracting';
-      job.phaseLabel = `Extracting ${primaryFile}`;
+      job.phaseLabel = isMultiPart
+        ? `Extracting ${downloadedEntries.length}-part archive (${entryArchive})`
+        : `Extracting ${entryArchive}`;
       job.progress = {
         percent: 0,
         bytesDone: 0,
@@ -804,7 +841,12 @@ export class JobQueueManager extends EventEmitter {
         speedBytesPerSec: 0,
         etaSeconds: null,
       };
-      this.appendLog(job, `Extracting archive: ${primaryFile}`);
+      this.appendLog(
+        job,
+        isMultiPart
+          ? `Extracting ${downloadedEntries.length}-part archive starting at: ${entryArchive}`
+          : `Extracting archive: ${entryArchive}`,
+      );
       this.emitJob(job, true);
 
       await extractArchive(
@@ -819,11 +861,15 @@ export class JobQueueManager extends EventEmitter {
           maxExtractBytes: this.config.maxExtractBytes,
           freeDiskBytes: postDownloadDisk.freeBytes,
           minFreeDiskBytes: this.config.minFreeDiskBytes,
+          totalArchiveSizeBytes,
+          isMultiPart,
           password: this.livePasswords.get(job.id),
         },
       );
 
-      await fs.unlink(archivePath);
+      await Promise.all(
+        downloadedEntries.map((file) => fs.unlink(path.join(jobStagingDir, file)).catch(() => {})),
+      );
       const extractedItems = await fs.readdir(extractDir);
       if (extractedItems.length === 0) {
         throw new Error('Archive extracted cleanly but contained no files');

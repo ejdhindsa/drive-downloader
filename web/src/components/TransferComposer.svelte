@@ -69,6 +69,55 @@
 
   let suggestion = $derived(suggestMediaDestination(parsedUrls, topFolders));
 
+  let multipartSummary = $derived.by(() => {
+    if (isDirect || !autoExtract || parsedUrls.length < 2) return null;
+    const groups = new Map<string, Set<number>>();
+    for (const raw of parsedUrls) {
+      let name = '';
+      try {
+        name = decodeURIComponent(new URL(raw).pathname.split('/').filter(Boolean).pop() ?? '');
+      } catch {
+        continue;
+      }
+      let key: string | null = null;
+      let order = 0;
+      const m1 = /^(.+)\.part(\d+)\.rar$/i.exec(name);
+      const m2 = /^(.+\.(?:7z|zip|rar))\.(\d{3,})$/i.exec(name);
+      const m3 = /^(.+)\.(rar|r\d{2,3})$/i.exec(name);
+      const m4 = /^(.+)\.(zip|z\d{2,3})$/i.exec(name);
+      if (m1) {
+        key = `rar-part:${m1[1].toLowerCase()}`;
+        order = Number.parseInt(m1[2], 10);
+      } else if (m2) {
+        key = `split-num:${m2[1].toLowerCase()}`;
+        order = Number.parseInt(m2[2], 10);
+      } else if (m3) {
+        key = `rar-legacy:${m3[1].toLowerCase()}`;
+        order = m3[2].toLowerCase() === 'rar' ? -1 : Number.parseInt(m3[2].slice(1), 10);
+      } else if (m4) {
+        key = `zip-split:${m4[1].toLowerCase()}`;
+        order = m4[2].toLowerCase() === 'zip' ? -1 : Number.parseInt(m4[2].slice(1), 10);
+      }
+      if (!key) continue;
+      let set = groups.get(key);
+      if (!set) {
+        set = new Set();
+        groups.set(key, set);
+      }
+      set.add(order);
+    }
+
+    let groupCount = 0;
+    let totalParts = 0;
+    for (const parts of groups.values()) {
+      if (parts.size >= 2) {
+        groupCount += 1;
+        totalParts += parts.size;
+      }
+    }
+    return groupCount > 0 ? { groupCount, totalParts } : null;
+  });
+
   let destinationPreview = $derived.by(() => {
     const root = transferStore.config?.rcloneRoot || 'gdrive:Media';
     const cleanNewSub = newSubfolder.trim().replace(/^\/+|\/+$/g, '');
@@ -306,6 +355,17 @@
         </div>
       {/if}
     </div>
+
+    {#if multipartSummary}
+      <div class="multipart-banner">
+        <span class="multipart-tag">Multi-part</span>
+        <span class="multipart-text">
+          {multipartSummary.totalParts} archive parts detected — will download & extract together as
+          {multipartSummary.groupCount}
+          {multipartSummary.groupCount === 1 ? 'transfer' : 'transfers'}
+        </span>
+      </div>
+    {/if}
 
     {#if suggestion}
       <button type="button" class="hint-banner" onclick={applySuggestion}>
@@ -715,6 +775,34 @@
     font-size: var(--uw-font-size-sm);
     font-weight: var(--uw-font-weight-semibold);
     pointer-events: none;
+  }
+
+  .multipart-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--uw-space-2);
+    padding: var(--uw-space-2) var(--uw-space-3);
+    border-radius: var(--uw-radius-md);
+    border: 1px solid var(--uw-warning-border);
+    background: var(--uw-warning-bg);
+    color: var(--uw-warning-fg);
+    font-size: var(--uw-font-size-xs);
+    animation: panelIn var(--uw-duration-normal) var(--uw-easing-emphasized);
+  }
+
+  .multipart-tag {
+    font-size: 0.68rem;
+    font-weight: var(--uw-font-weight-bold);
+    text-transform: uppercase;
+    letter-spacing: var(--uw-letter-spacing-wider);
+    padding: 2px var(--uw-space-2);
+    border-radius: var(--uw-radius-full);
+    background: color-mix(in oklch, var(--uw-warning-solid) 20%, transparent);
+    flex-shrink: 0;
+  }
+
+  .multipart-text {
+    line-height: var(--uw-line-height-snug);
   }
 
   .hint-banner {

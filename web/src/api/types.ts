@@ -28,6 +28,7 @@ export interface JobProgress {
 export interface Job {
   id: string;
   url: string;
+  partUrls?: string[];
   folder: string;
   subfolder: string;
   destinationRemote: string;
