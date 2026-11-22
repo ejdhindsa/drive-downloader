@@ -1,0 +1,27 @@
+body {
+  background-color: var(--uw-bg-canvas);
+  color: var(--uw-fg-default);
+  font-family: var(--uw-font-sans);
+  font-size: var(--uw-font-size-base);
+  line-height: var(--uw-line-height-normal);
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3 {
+  color: var(--uw-fg-heading);
+  font-family: var(--uw-font-display);
+  letter-spacing: var(--uw-letter-spacing-tight);
+}
+
+code,
+pre,
+.mono {
+  font-family: var(--uw-font-mono);
+}
+
+:focus-visible {
+  outline: 2px solid var(--uw-focus-ring);
+  outline-offset: 2px;
+}
