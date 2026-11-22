@@ -1,7 +1,7 @@
-// URL, path, header, proxy, and redirect-safe HTTP security helpers.
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import { MIB, REDACTED_VALUE } from './consts';
 import type { CustomHeader, Job } from './types';
 
 const BLOCKED_HOSTNAMES = new Set([
@@ -69,7 +69,6 @@ function isPrivateIpv4(ip: string): boolean {
   );
 }
 
-/** Returns true if an IPv4 or IPv6 address belongs to a private, loopback, or reserved range. */
 export function isPrivateOrReservedIp(rawIp: string): boolean {
   const ip = rawIp.trim().toLowerCase().split('%')[0];
   const version = net.isIP(ip);
@@ -108,7 +107,6 @@ export function isPrivateOrReservedIp(rawIp: string): boolean {
 
 export type DnsLookupFn = (host: string) => Promise<Array<{ address: string }>>;
 
-/** Validates that a URL uses http/https and resolves only to public IP addresses. */
 export async function validatePublicUrl(
   rawUrl: string,
   lookupFn: DnsLookupFn = (host) => dns.lookup(host, { all: true, verbatim: true }),
@@ -168,7 +166,6 @@ export async function validatePublicUrl(
   return parsed;
 }
 
-/** Validates an optional DOWNLOAD_PROXY URL (http:// or https://, Docker-internal hosts allowed). */
 export function validateProxyUrl(rawProxy: string | undefined): string {
   const trimmed = rawProxy?.trim() ?? '';
   if (!trimmed) return '';
@@ -195,7 +192,6 @@ export function validateProxyUrl(rawProxy: string | undefined): string {
   return parsed.toString().replace(/\/$/, '');
 }
 
-/** Strips username/password credentials from a proxy URL before logging. */
 export function redactProxyUrl(proxyUrl: string): string {
   if (!proxyUrl) return '';
   try {
@@ -229,7 +225,6 @@ function validatePathSegment(segment: string): string {
   return trimmed;
 }
 
-/** Validates a single top-level Drive folder name. */
 export function sanitizeFolderName(folder: string): string {
   const trimmed = folder.trim().replace(/^\/+|\/+$/g, '');
   if (!trimmed || trimmed.includes('/')) {
@@ -238,7 +233,6 @@ export function sanitizeFolderName(folder: string): string {
   return validatePathSegment(trimmed);
 }
 
-/** Normalizes and validates a relative subfolder path. */
 export function sanitizeRelativePath(rawPath: string | undefined): string {
   if (!rawPath) return '';
   const rawSegments = rawPath.split('/').map((s) => s.trim()).filter(Boolean);
@@ -246,7 +240,6 @@ export function sanitizeRelativePath(rawPath: string | undefined): string {
   return rawSegments.map(validatePathSegment).join('/');
 }
 
-/** Validates an optional single filename (no directory separators). */
 export function sanitizeFilename(rawName: string | undefined): string | undefined {
   if (!rawName) return undefined;
   const trimmed = rawName.trim();
@@ -257,7 +250,6 @@ export function sanitizeFilename(rawName: string | undefined): string | undefine
   return validatePathSegment(trimmed);
 }
 
-/** Validates custom HTTP header names and values against CRLF/control-character injection. */
 export function sanitizeHeaders(headers: CustomHeader[] | undefined): CustomHeader[] {
   if (!headers || headers.length === 0) return [];
   const cleaned: CustomHeader[] = [];
@@ -276,21 +268,18 @@ export function sanitizeHeaders(headers: CustomHeader[] | undefined): CustomHead
   return cleaned;
 }
 
-/** Returns true if a header name typically carries credentials or session secrets. */
 export function isSensitiveHeaderName(name: string): boolean {
   return SENSITIVE_HEADER_PATTERN.test(name.trim());
 }
 
-/** Replaces sensitive header values with "[REDACTED]" while leaving benign headers readable. */
 export function redactHeaders(headers: CustomHeader[] | undefined): CustomHeader[] {
   if (!headers || headers.length === 0) return [];
   return headers.map((h) => ({
     name: h.name,
-    value: isSensitiveHeaderName(h.name) ? '[REDACTED]' : h.value,
+    value: isSensitiveHeaderName(h.name) ? REDACTED_VALUE : h.value,
   }));
 }
 
-/** Returns a safe copy of a Job with sensitive header values redacted for API, SSE, and disk storage. */
 export function redactJobForOutput(job: Job): Job {
   return {
     ...job,
@@ -337,10 +326,6 @@ function stripCrossOriginSensitiveHeaders(headers: Record<string, string>): Reco
   return next;
 }
 
-/**
- * Performs an HTTP request while validating the initial URL and every redirect hop
- * against private/reserved IPs and internal hostnames.
- */
 export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Promise<SafeFetchResult> {
   const maxRedirects = opts.maxRedirects ?? 10;
   const timeoutMs = opts.timeoutMs ?? 15_000;
@@ -401,10 +386,6 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
   throw new Error(`Too many redirects (exceeded ${maxRedirects})`);
 }
 
-/**
- * Probes a URL's redirect chain before handing it to aria2c or rclone, rejecting
- * any hop that resolves to a private or internal address.
- */
 export async function resolveSafeUrl(
   rawUrl: string,
   opts: Omit<SafeFetchOptions, 'method'> = {},
@@ -424,10 +405,9 @@ export async function resolveSafeUrl(
   return head.finalUrl;
 }
 
-/** Reads a Response body as UTF-8 text while aborting if the payload exceeds maxBytes. */
 export async function readBoundedText(
   response: Response,
-  maxBytes = 5 * 1024 * 1024,
+  maxBytes = 5 * MIB,
 ): Promise<string> {
   const contentLength = Number.parseInt(response.headers.get('content-length') ?? '', 10);
   if (Number.isFinite(contentLength) && contentLength > maxBytes) {

@@ -1,10 +1,10 @@
-// Transfer queue orchestration for staged aria2c+rclone and direct rclone copyurl jobs.
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import EventEmitter from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AppConfig } from './config';
+import { GIB, MIB, REDACTED_VALUE } from './consts';
 import { detectArchiveFormat, extractArchive } from './extractor';
 import { refreshMediaTargets } from './jellyfin';
 import { attachAbortKill } from './process';
@@ -43,9 +43,9 @@ function parseSizeToBytes(rawValue: string, unit: string): number {
     case 'KiB':
       return Math.round(num * 1024);
     case 'MiB':
-      return Math.round(num * 1024 ** 2);
+      return Math.round(num * MIB);
     case 'GiB':
-      return Math.round(num * 1024 ** 3);
+      return Math.round(num * GIB);
     case 'TiB':
       return Math.round(num * 1024 ** 4);
     case 'KB':
@@ -76,7 +76,6 @@ function parseEtaToSeconds(rawEta: string): number | null {
   return matched ? total : null;
 }
 
-/** Parses an aria2c console progress line into structured transfer stats. */
 export function parseAria2ProgressLine(line: string): JobProgress | null {
   const match = line.match(
     /([\d.]+)(TiB|GiB|MiB|KiB|GB|MB|KB|B)\/([\d.]+)(TiB|GiB|MiB|KiB|GB|MB|KB|B)\((\d+)%\).*?DL:([\d.]+)(TiB|GiB|MiB|KiB|GB|MB|KB|B)(?:.*?ETA:([0-9dhms]+))?/,
@@ -119,7 +118,6 @@ function guessNameFromUrl(rawUrl: string): string {
   }
 }
 
-/** Builds hardened aria2c CLI flags for a single HTTP/HTTPS staged download. */
 export function buildAria2Args(
   job: Pick<Job, 'url' | 'customFilename' | 'headers'>,
   stagingDir: string,
@@ -427,7 +425,7 @@ export class JobQueueManager extends EventEmitter {
   }
 
   private getExecutionHeaders(job: Job): CustomHeader[] {
-    return this.liveHeaders.get(job.id) ?? job.headers.filter((h) => h.value !== '[REDACTED]');
+    return this.liveHeaders.get(job.id) ?? job.headers.filter((h) => h.value !== REDACTED_VALUE);
   }
 
   private async runJob(job: Job, controller?: AbortController): Promise<void> {
@@ -569,8 +567,8 @@ export class JobQueueManager extends EventEmitter {
       throw new Error('Cancelled');
     }
     if (disk.freeBytes < this.config.minFreeDiskBytes) {
-      const freeGb = (disk.freeBytes / 1024 ** 3).toFixed(1);
-      const minGb = (this.config.minFreeDiskBytes / 1024 ** 3).toFixed(0);
+      const freeGb = (disk.freeBytes / GIB).toFixed(1);
+      const minGb = (this.config.minFreeDiskBytes / GIB).toFixed(0);
       throw new Error(
         `Insufficient VPS disk space (${freeGb} GB free; minimum ${minGb} GB required)`,
       );

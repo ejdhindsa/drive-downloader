@@ -84,7 +84,6 @@ export interface RcloneTransferCallbacks {
   onLog: (line: string) => void;
 }
 
-/** Builds a child process environment with HTTP/HTTPS proxy variables set. */
 export function buildProxyEnv(
   proxyUrl: string | undefined,
   baseEnv: NodeJS.ProcessEnv = process.env,

@@ -1,4 +1,3 @@
-// HTTP security middleware: response headers, Origin/Referer CSRF checks, and rate limiting.
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -26,7 +25,6 @@ export interface RateLimiter {
   clear: () => void;
 }
 
-/** Creates an in-memory sliding-window rate limiter keyed by client identifier. */
 export function createRateLimiter(opts: { windowMs: number; maxRequests: number }): RateLimiter {
   const buckets = new Map<string, number[]>();
 
@@ -50,7 +48,6 @@ export function createRateLimiter(opts: { windowMs: number; maxRequests: number 
       recent.push(now);
       buckets.set(key, recent);
 
-      // Trim stale keys lazily if the map grows large under heavy scanning.
       if (buckets.size > 1000) {
         for (const [k, list] of buckets.entries()) {
           if (list.every((ts) => ts <= cutoff)) {
@@ -85,7 +82,6 @@ function extractHeaderHost(headerValue: string): string | null {
   }
 }
 
-/** Validates same-origin CSRF headers for browser-initiated mutating requests. */
 export function verifySameOriginRequest(request: FastifyRequest): string | null {
   const fetchSite = String(request.headers['sec-fetch-site'] ?? '').trim().toLowerCase();
   if (fetchSite === 'cross-site') {
@@ -122,7 +118,6 @@ export interface HttpSecurityOptions {
   rateLimitMaxRequests?: number;
 }
 
-/** Registers security headers, CSRF protection, and mutating-route rate limits on Fastify. */
 export function registerHttpSecurity(
   app: FastifyInstance,
   opts: HttpSecurityOptions = {},

@@ -1,4 +1,3 @@
-// Fastify HTTP server, REST API routes, and Server-Sent Events stream.
 import type { ServerResponse } from 'node:http';
 import path from 'node:path';
 import fastifyStatic from '@fastify/static';
@@ -19,7 +18,6 @@ export interface BuildAppOptions {
   security?: HttpSecurityOptions;
 }
 
-/** Builds a configured Fastify application instance without binding a port. */
 export async function buildApp(opts: BuildAppOptions): Promise<{
   app: FastifyInstance;
   closeSseClients: () => void;

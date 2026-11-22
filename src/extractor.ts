@@ -1,8 +1,14 @@
-// Archive format detection, preflight safety inspection, extraction, and tree sanitization.
 import { spawn } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {
+  DEFAULT_MAX_COMPRESSION_RATIO,
+  DEFAULT_MAX_EXTRACT_BYTES,
+  GIB,
+  MIB,
+  RATIO_CHECK_MIN_BYTES,
+} from './consts';
 import { attachAbortKill } from './process';
 
 export type ArchiveFormat = 'zip' | '7z' | 'rar' | 'tar';
@@ -19,11 +25,6 @@ export interface ArchiveExtractionLimits {
   maxCompressionRatio?: number;
 }
 
-const DEFAULT_MAX_EXTRACT_BYTES = 50 * 1024 * 1024 * 1024;
-const DEFAULT_MAX_COMPRESSION_RATIO = 100;
-const RATIO_CHECK_MIN_BYTES = 1024 * 1024 * 1024;
-
-/** Detects a supported archive format from its filename extension. */
 export function detectArchiveFormat(filename: string): ArchiveFormat | null {
   const lower = filename.toLowerCase();
   if (lower.endsWith('.zip')) return 'zip';
@@ -43,10 +44,6 @@ export function detectArchiveFormat(filename: string): ArchiveFormat | null {
   return null;
 }
 
-/**
- * Resolves the first executable binary from `candidates` found on `pathEnv`.
- * Throws a clear error if none are installed.
- */
 export async function resolveBinary(
   candidates: string[],
   pathEnv = process.env.PATH || '',
@@ -61,7 +58,7 @@ export async function resolveBinary(
         await fs.access(fullPath, fsConstants.X_OK);
         return fullPath;
       } catch {
-        // Continue searching PATH
+        continue;
       }
     }
   }
@@ -70,7 +67,6 @@ export async function resolveBinary(
   );
 }
 
-/** Resolves `7zz` (Alpine 7zip package) or `7z` from PATH. */
 export async function resolve7zBinary(pathEnv = process.env.PATH || ''): Promise<string> {
   return resolveBinary(['7zz', '7z'], pathEnv);
 }
@@ -124,7 +120,7 @@ function runCommandCapture(
   cmd: string,
   args: string[],
   signal: AbortSignal,
-  maxBytes = 8 * 1024 * 1024,
+  maxBytes = 8 * MIB,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -180,7 +176,6 @@ function runCommandCapture(
   });
 }
 
-/** Parses `7zz l -slt` / `7z l -slt` technical archive listing output. */
 export function parse7zListing(output: string): ArchiveEntryInfo[] {
   const markerIndex = output.indexOf('----------');
   if (markerIndex === -1) return [];
@@ -213,7 +208,6 @@ export function parse7zListing(output: string): ArchiveEntryInfo[] {
   return entries;
 }
 
-/** Parses `unzip -l` output as a fallback when `7zz` is unavailable. */
 export function parseUnzipListing(output: string): ArchiveEntryInfo[] {
   const entries: ArchiveEntryInfo[] = [];
   const lineRegex = /^\s*(\d+)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+(.+)$/;
@@ -232,7 +226,6 @@ export function parseUnzipListing(output: string): ArchiveEntryInfo[] {
   return entries;
 }
 
-/** Parses `tar -tvf` or `bsdtar -tvf` listing lines across GNU, BusyBox, and BSD formats. */
 export function parseTarListing(output: string): ArchiveEntryInfo[] {
   const entries: ArchiveEntryInfo[] = [];
   // Matches both GNU/BusyBox (`perms owner/group size YYYY-MM-DD HH:MM path`)
@@ -244,7 +237,6 @@ export function parseTarListing(output: string): ArchiveEntryInfo[] {
     const match = rawLine.match(gnuRegex) ?? rawLine.match(bsdRegex);
     if (!match) continue;
     const sizeBytes = Number.parseInt(match[1], 10);
-    // Strip symlink/hardlink target suffix (` -> target`) when checking the entry path.
     const entryPath = match[2].split(' -> ')[0].trim();
     if (Number.isFinite(sizeBytes) && entryPath) {
       entries.push({ path: entryPath, sizeBytes });
@@ -264,10 +256,6 @@ function isUnsafeArchiveEntryPath(entryPath: string): boolean {
   return segments.some((seg) => seg === '..');
 }
 
-/**
- * Validates archive entries before extraction to reject path traversal, oversized payloads,
- * insufficient disk headroom, and suspected zip bombs.
- */
 export function validateArchivePreflight(opts: {
   entries: ArchiveEntryInfo[];
   archiveSizeBytes: number;
@@ -282,25 +270,26 @@ export function validateArchivePreflight(opts: {
     totalUncompressedBytes += Math.max(0, entry.sizeBytes);
   }
 
-  const maxExtractBytes = opts.limits.maxExtractBytes;
-  if (totalUncompressedBytes > maxExtractBytes) {
-    const totalGb = (totalUncompressedBytes / 1024 ** 3).toFixed(2);
-    const capGb = (maxExtractBytes / 1024 ** 3).toFixed(1);
-    throw new Error(
-      `Archive uncompressed size (${totalGb} GB) exceeds maximum allowed limit (${capGb} GB)`,
-    );
-  }
-
+  // Check real available disk headroom before the static ceiling so tight disks report accurately.
   if (opts.limits.freeDiskBytes !== undefined) {
     const reserve = opts.limits.minFreeDiskBytes ?? 0;
     const availableForExtract = Math.max(0, opts.limits.freeDiskBytes - reserve);
     if (totalUncompressedBytes > availableForExtract) {
-      const needGb = (totalUncompressedBytes / 1024 ** 3).toFixed(2);
-      const availGb = (availableForExtract / 1024 ** 3).toFixed(2);
+      const needGb = (totalUncompressedBytes / GIB).toFixed(2);
+      const availGb = (availableForExtract / GIB).toFixed(2);
       throw new Error(
         `Insufficient disk space to extract archive (needs ${needGb} GB, only ${availGb} GB available above reserve)`,
       );
     }
+  }
+
+  const maxExtractBytes = opts.limits.maxExtractBytes;
+  if (totalUncompressedBytes > maxExtractBytes) {
+    const totalGb = (totalUncompressedBytes / GIB).toFixed(2);
+    const capGb = (maxExtractBytes / GIB).toFixed(1);
+    throw new Error(
+      `Archive uncompressed size (${totalGb} GB) exceeds maximum allowed limit (${capGb} GB)`,
+    );
   }
 
   const maxRatio = opts.limits.maxCompressionRatio ?? DEFAULT_MAX_COMPRESSION_RATIO;
@@ -360,10 +349,6 @@ async function inspectArchiveEntries(
   return parse7zListing(output);
 }
 
-/**
- * Normalizes permissions on extracted files/directories and removes symlinks and
- * special files (FIFOs, sockets, device nodes) before upload.
- */
 export async function sanitizeExtractedTree(
   rootDir: string,
   onLog: (line: string) => void,
@@ -406,7 +391,6 @@ export async function sanitizeExtractedTree(
   await walk(resolvedRoot);
 }
 
-/** Inspects an archive for safety, extracts it into `destDir`, and sanitizes the output tree. */
 export async function extractArchive(
   archivePath: string,
   destDir: string,
@@ -427,7 +411,7 @@ export async function extractArchive(
     limits,
   });
   onLog(
-    `Preflight passed: ${preflight.entryCount} entry(s), ${(preflight.totalUncompressedBytes / 1024 ** 2).toFixed(1)} MB uncompressed`,
+    `Preflight passed: ${preflight.entryCount} entry(s), ${(preflight.totalUncompressedBytes / MIB).toFixed(1)} MB uncompressed`,
   );
 
   await fs.mkdir(destDir, { recursive: true });

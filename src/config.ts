@@ -1,5 +1,11 @@
-// Runtime configuration loaded from environment variables.
 import path from 'node:path';
+import {
+  DEFAULT_MAX_CONCURRENT_JOBS,
+  DEFAULT_MAX_EXTRACT_SIZE_GB,
+  DEFAULT_MIN_FREE_DISK_GB,
+  GIB,
+  MAX_CONCURRENT_JOBS_CAP,
+} from './consts';
 import { validateProxyUrl } from './security';
 
 export interface AppConfig {
@@ -24,10 +30,12 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-/** Loads and validates application configuration from process.env. */
 export function loadConfig(): AppConfig {
-  const minFreeGb = parsePositiveInt(process.env.MIN_FREE_DISK_GB, 15);
-  const maxExtractGb = parsePositiveInt(process.env.MAX_EXTRACT_SIZE_GB, 50);
+  const minFreeGb = parsePositiveInt(process.env.MIN_FREE_DISK_GB, DEFAULT_MIN_FREE_DISK_GB);
+  const maxExtractGb = parsePositiveInt(
+    process.env.MAX_EXTRACT_SIZE_GB,
+    DEFAULT_MAX_EXTRACT_SIZE_GB,
+  );
 
   return {
     port: parsePositiveInt(process.env.PORT, 3000),
@@ -36,9 +44,12 @@ export function loadConfig(): AppConfig {
     rcloneConfig: process.env.RCLONE_CONFIG?.trim() || '/config/rclone/rclone.conf',
     stagingDir: path.resolve(process.env.STAGING_DIR?.trim() || '/tmp/staging'),
     dataDir: path.resolve(process.env.DATA_DIR?.trim() || '/app/data'),
-    maxConcurrentJobs: Math.min(parsePositiveInt(process.env.MAX_CONCURRENT_JOBS, 2), 6),
-    minFreeDiskBytes: minFreeGb * 1024 * 1024 * 1024,
-    maxExtractBytes: maxExtractGb * 1024 * 1024 * 1024,
+    maxConcurrentJobs: Math.min(
+      parsePositiveInt(process.env.MAX_CONCURRENT_JOBS, DEFAULT_MAX_CONCURRENT_JOBS),
+      MAX_CONCURRENT_JOBS_CAP,
+    ),
+    minFreeDiskBytes: minFreeGb * GIB,
+    maxExtractBytes: maxExtractGb * GIB,
     downloadProxy: validateProxyUrl(process.env.DOWNLOAD_PROXY),
     jellyfinUrl: (process.env.JELLYFIN_URL?.trim() || '').replace(/\/+$/, ''),
     jellyfinApiKey: process.env.JELLYFIN_API_KEY?.trim() || '',

@@ -136,13 +136,14 @@ describe('archive preflight parsing and safety checks', () => {
       }),
     ).toThrow(/exceeds maximum allowed limit/);
 
+    // Disk headroom check runs before the static cap, so 50 GB on a 49 GB free disk reports disk space first.
     expect(() =>
       validateArchivePreflight({
-        entries: [{ path: 'movie.mkv', sizeBytes: 20 * gib }],
-        archiveSizeBytes: 18 * gib,
+        entries: [{ path: 'movie.mkv', sizeBytes: 50 * gib }],
+        archiveSizeBytes: 45 * gib,
         limits: {
           maxExtractBytes: 50 * gib,
-          freeDiskBytes: 25 * gib,
+          freeDiskBytes: 49 * gib,
           minFreeDiskBytes: 15 * gib,
         },
       }),
