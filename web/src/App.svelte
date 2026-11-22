@@ -5,9 +5,7 @@
 <div class="shell">
   <header class="topbar">
     <div class="brand">
-      <span class="brand-badge" aria-hidden="true">
-        <span class="material-symbols-outlined brand-icon">cloud_sync</span>
-      </span>
+      <span class="material-symbols-outlined brand-icon" aria-hidden="true">cloud_sync</span>
       <div>
         <h1>Drive Downloader</h1>
         <p class="subtitle">Staged &amp; direct transfers to Google Drive</p>
@@ -51,21 +49,10 @@
     gap: var(--uw-space-3);
   }
 
-  .brand-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--uw-space-10);
-    height: var(--uw-space-10);
-    border-radius: var(--uw-radius-lg);
-    background: var(--uw-brand-solid);
-    color: var(--uw-brand-on-solid);
-    box-shadow: var(--uw-shadow-sm);
-    flex-shrink: 0;
-  }
-
   .brand-icon {
-    font-size: 1.5rem;
+    font-size: 2rem;
+    color: var(--uw-brand-solid);
+    flex-shrink: 0;
     font-variation-settings:
       'FILL' 0,
       'wght' 500,
