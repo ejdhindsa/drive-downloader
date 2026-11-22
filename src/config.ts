@@ -6,7 +6,7 @@ import {
   GIB,
   MAX_CONCURRENT_JOBS_CAP,
 } from './consts';
-import { validateProxyUrl } from './security';
+import { validateProxyUrl } from './utils/security';
 
 export interface AppConfig {
   port: number;

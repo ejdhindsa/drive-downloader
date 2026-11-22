@@ -2,10 +2,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { AppConfig } from './config';
-import { JobQueueManager } from './queue';
-import { buildApp } from './server';
-import { JobStore } from './store';
+import type { AppConfig } from '../config';
+import { buildApp } from '../server';
+import { JobQueueManager } from '../services/queue';
+import { JobStore } from '../services/store';
 
 const tempDirs: string[] = [];
 

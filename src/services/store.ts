@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { redactJobForOutput } from './security';
-import type { Job } from './types';
+import type { Job } from '../types';
+import { redactJobForOutput } from '../utils/security';
 
 export const MAX_FINISHED_JOBS = 200;
 

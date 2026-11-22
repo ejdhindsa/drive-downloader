@@ -2,9 +2,9 @@ import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import type { AppConfig } from './config';
-import { attachAbortKill } from './process';
-import type { CustomHeader, JobProgress } from './types';
+import type { AppConfig } from '../config';
+import type { CustomHeader, JobProgress } from '../types';
+import { attachAbortKill } from '../utils/process';
 
 const execFileAsync = promisify(execFile);
 

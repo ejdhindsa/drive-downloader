@@ -3,12 +3,16 @@ import crypto from 'node:crypto';
 import EventEmitter from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { AppConfig } from './config';
-import { GIB, MIB, REDACTED_VALUE } from './consts';
-import { detectArchiveFormat, extractArchive } from './extractor';
-import { refreshMediaTargets } from './jellyfin';
-import { attachAbortKill } from './process';
-import { assertNoSkippedFiles, runRcloneCopyUrl, runRcloneMove } from './rclone';
+import type { AppConfig } from '../config';
+import { GIB, MIB, REDACTED_VALUE } from '../consts';
+import type {
+  CreateJobsRequest,
+  CustomHeader,
+  DiskStatus,
+  Job,
+  JobProgress,
+} from '../types';
+import { attachAbortKill } from '../utils/process';
 import {
   redactHeaders,
   redactJobForOutput,
@@ -19,20 +23,16 @@ import {
   sanitizeHeaders,
   sanitizeRelativePath,
   validatePublicUrl,
-} from './security';
+} from '../utils/security';
+import { detectArchiveFormat, extractArchive } from './extractor';
+import { refreshMediaTargets } from './jellyfin';
+import { assertNoSkippedFiles, runRcloneCopyUrl, runRcloneMove } from './rclone';
 import {
   type JobStore,
   isActiveOrQueuedStatus,
   trimJobHistory,
   verifyWritableDirectory,
 } from './store';
-import type {
-  CreateJobsRequest,
-  CustomHeader,
-  DiskStatus,
-  Job,
-  JobProgress,
-} from './types';
 
 function parseSizeToBytes(rawValue: string, unit: string): number {
   const num = Number.parseFloat(rawValue);

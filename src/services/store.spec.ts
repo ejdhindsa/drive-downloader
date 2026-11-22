@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { JobStore, trimJobHistory, verifyWritableDirectory } from './store';
-import type { Job } from './types';
+import type { Job } from '../types';
 
 function makeJob(id: string, status: Job['status']): Job {
   return {
