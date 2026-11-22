@@ -58,6 +58,28 @@
       refreshing = false;
     }
   }
+
+  async function handleToggleAlerts() {
+    const outcome = await transferStore.toggleBrowserNotifications();
+    if (outcome === 'enabled') {
+      const mins = Math.max(
+        0,
+        Math.round((transferStore.config?.notifyInactiveSeconds ?? 300) / 60),
+      );
+      toasts.push(
+        'success',
+        mins > 0
+          ? `Browser alerts enabled (fires after ${mins}m of tab inactivity).`
+          : 'Browser alerts enabled.',
+      );
+    } else if (outcome === 'disabled') {
+      toasts.push('info', 'Browser alerts disabled.');
+    } else if (outcome === 'denied') {
+      toasts.push('danger', 'Notification permission was denied by your browser.');
+    } else {
+      toasts.push('info', 'Browser notifications are not supported here.');
+    }
+  }
 </script>
 
 <header class="header-wrap">
@@ -124,6 +146,22 @@
       <button type="button" class="action-btn" onclick={() => (bookmarkletOpen = true)}>
         Bookmarklet
       </button>
+
+      {#if transferStore.notificationPermission !== 'unsupported'}
+        <button
+          type="button"
+          class="action-btn alerts-btn"
+          class:enabled={transferStore.notificationsEnabled}
+          onclick={handleToggleAlerts}
+        >
+          <span
+            class="alert-dot"
+            class:on={transferStore.notificationsEnabled}
+            aria-hidden="true"
+          ></span>
+          <span>{transferStore.notificationsEnabled ? 'Alerts On' : 'Alerts'}</span>
+        </button>
+      {/if}
 
       <ThemeToggle />
     </div>
@@ -278,6 +316,23 @@
     background: var(--uw-brand-bg);
     border-color: var(--uw-brand-border);
     color: var(--uw-brand-fg);
+  }
+
+  .alerts-btn.enabled {
+    background: var(--uw-brand-bg);
+    border-color: var(--uw-brand-border);
+    color: var(--uw-brand-fg);
+  }
+
+  .alert-dot {
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: var(--uw-radius-full);
+    background: var(--uw-fg-muted);
+  }
+
+  .alert-dot.on {
+    background: var(--uw-brand-solid);
   }
 
   .chevron {

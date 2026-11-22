@@ -88,6 +88,10 @@ export interface AppConfigResponse {
   rcloneRoot: string;
   jellyfinConfigured: boolean;
   rcloneRcConfigured: boolean;
+  audiobookshelfConfigured: boolean;
+  postUploadWebhookConfigured: boolean;
+  notificationsConfigured: boolean;
+  notifyInactiveSeconds: number;
   proxyConfigured: boolean;
   ytDlpAvailable: boolean;
   maxConcurrentJobs: number;
@@ -127,6 +131,8 @@ export interface CreateJobsPayload {
 export interface RefreshResponse {
   rcloneRefreshed: boolean;
   jellyfinRefreshed: boolean;
+  audiobookshelfRefreshed: boolean;
+  webhookTriggered: boolean;
   messages: string[];
 }
 

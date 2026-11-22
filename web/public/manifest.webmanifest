@@ -1,0 +1,39 @@
+{
+  "name": "Drive Downloader",
+  "short_name": "Drive DL",
+  "description": "Self-hosted URL-to-Google-Drive downloader with aria2c, yt-dlp, archive extraction, and rclone streaming",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0f1712",
+  "theme_color": "#439124",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "share_target": {
+    "action": "/",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "inspect"
+    }
+  }
+}
