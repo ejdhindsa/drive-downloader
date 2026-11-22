@@ -255,6 +255,22 @@ export class JobQueueManager extends EventEmitter {
       throw new Error('Custom filename cannot be used when queuing multiple URLs at once');
     }
 
+    const perUrlFilenames = new Map<string, string>();
+    if (req.customFilenames && typeof req.customFilenames === 'object') {
+      for (const [rawKey, rawVal] of Object.entries(req.customFilenames)) {
+        const key = rawKey.trim();
+        if (!key || typeof rawVal !== 'string') continue;
+        const cleanVal = sanitizeFilename(rawVal);
+        if (!cleanVal) continue;
+        perUrlFilenames.set(key, cleanVal);
+        try {
+          perUrlFilenames.set(new URL(key).toString(), cleanVal);
+        } catch {
+          // Non-URL key is still retained under its trimmed literal form.
+        }
+      }
+    }
+
     const rawHeaders = sanitizeHeaders(req.headers);
     const redactedHeaders = redactHeaders(rawHeaders);
     const archivePassword = sanitizeArchivePassword(req.archivePassword);
@@ -290,6 +306,9 @@ export class JobQueueManager extends EventEmitter {
       const id = crypto.randomUUID();
       const url = entry.urls[0];
       const partUrls = entry.urls.length > 1 ? entry.urls : undefined;
+      const jobCustomFilename = partUrls
+        ? undefined
+        : customFilename || perUrlFilenames.get(url);
       if (rawHeaders.length > 0) {
         this.liveHeaders.set(id, rawHeaders);
       }
@@ -304,8 +323,8 @@ export class JobQueueManager extends EventEmitter {
         folder,
         subfolder,
         destinationRemote,
-        customFilename,
-        resolvedFilename: customFilename || entry.groupName || guessNameFromUrl(url),
+        customFilename: jobCustomFilename,
+        resolvedFilename: jobCustomFilename || entry.groupName || guessNameFromUrl(url),
         mode,
         conflictPolicy,
         autoExtract,

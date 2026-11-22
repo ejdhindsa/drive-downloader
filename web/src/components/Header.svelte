@@ -2,6 +2,7 @@
   import { triggerMediaRefresh } from '../api/client';
   import { toasts } from '../stores/toasts.svelte';
   import { transferStore } from '../stores/transferStore.svelte';
+  import BookmarkletModal from './BookmarkletModal.svelte';
   import TelemetryBar from './TelemetryBar.svelte';
   import ThemeToggle from './ThemeToggle.svelte';
 
@@ -17,6 +18,7 @@
 
   let telemetryOpen = $state(readInitialOpen());
   let refreshing = $state(false);
+  let bookmarkletOpen = $state(false);
 
   $effect(() => {
     transferStore.setTelemetryOpen(telemetryOpen);
@@ -119,12 +121,18 @@
         </button>
       {/if}
 
+      <button type="button" class="action-btn" onclick={() => (bookmarkletOpen = true)}>
+        Bookmarklet
+      </button>
+
       <ThemeToggle />
     </div>
   </div>
 
   <TelemetryBar open={telemetryOpen} />
 </header>
+
+<BookmarkletModal open={bookmarkletOpen} onClose={() => (bookmarkletOpen = false)} />
 
 <style>
   .header-wrap {

@@ -58,6 +58,7 @@ export interface CreateJobsRequest {
   existingSubfolder?: string;
   newSubfolder?: string;
   customFilename?: string;
+  customFilenames?: Record<string, string>;
   mode: TransferMode;
   conflictPolicy?: ConflictPolicy;
   autoExtract: boolean;
@@ -96,6 +97,8 @@ export interface SystemStats {
   driveQuota: DriveQuotaStats | null;
 }
 
+export type FileCategory = 'video' | 'archive' | 'audio' | 'book' | 'other';
+
 export interface ResolvedTarget {
   downloadUrl: string;
   filename?: string;
@@ -104,6 +107,7 @@ export interface ResolvedTarget {
   headers?: CustomHeader[];
   sourceUrl?: string;
   hoster: string;
+  category?: FileCategory;
   note?: string;
 }
 

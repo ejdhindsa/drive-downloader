@@ -2,6 +2,7 @@ import type { ResolvedTarget } from '../types';
 import { sanitizeFilename, sanitizeHeaders, validatePublicUrl } from '../utils/security';
 import { directResolver } from './direct';
 import { BUILTIN_HOSTER_RESOLVERS } from './hosters';
+import { categorizeFilename, scanWebpage } from './page-scanner';
 import type { ResolverContext, UrlResolver } from './types';
 
 export interface ResolveUrlResult {
@@ -67,7 +68,87 @@ export class ResolverRegistry {
         headers: safeHeaders && safeHeaders.length > 0 ? safeHeaders : undefined,
         sourceUrl: item.sourceUrl ?? parsed.toString(),
         hoster: item.hoster || resolver.label,
+        category:
+          item.category ??
+          categorizeFilename(safeFilename || validatedTarget.pathname, item.mimeType),
       });
+    }
+
+    if (
+      ctx.inspectOnly &&
+      resolver.id === 'direct' &&
+      safeItems.length === 1 &&
+      (safeItems[0].mimeType === 'text/html' || safeItems[0].mimeType === 'application/xhtml+xml')
+    ) {
+      ctx.onLog?.('Scanning HTML page for downloadable links...');
+      const scanned = await scanWebpage(parsed, ctx, this.resolvers);
+      const scannedWarnings = [...warnings, ...scanned.warnings];
+
+      if (scanned.items.length > 0) {
+        const hostCache = new Map<string, Promise<boolean>>();
+        const checkHost = (targetUrl: string): Promise<boolean> => {
+          let hostKey: string;
+          try {
+            hostKey = new URL(targetUrl).hostname.toLowerCase();
+          } catch {
+            return Promise.resolve(false);
+          }
+          let pending = hostCache.get(hostKey);
+          if (!pending) {
+            pending = validatePublicUrl(targetUrl, ctx.lookupFn)
+              .then(() => true)
+              .catch(() => false);
+            hostCache.set(hostKey, pending);
+          }
+          return pending;
+        };
+
+        const validatedItems: ResolvedTarget[] = [];
+        for (const item of scanned.items) {
+          const allowed = await checkHost(item.downloadUrl);
+          if (!allowed) {
+            scannedWarnings.push(`Blocked unsafe scanned link: ${item.downloadUrl}`);
+            continue;
+          }
+
+          let cleanName: string | undefined;
+          if (item.filename) {
+            try {
+              cleanName = sanitizeFilename(item.filename);
+            } catch {
+              cleanName = undefined;
+            }
+          }
+
+          validatedItems.push({
+            ...item,
+            filename: cleanName,
+            sourceUrl: item.sourceUrl ?? parsed.toString(),
+            category: item.category ?? categorizeFilename(cleanName || item.downloadUrl),
+          });
+        }
+
+        if (validatedItems.length > 0) {
+          return {
+            resolverId: 'page-scanner',
+            resolverLabel: 'Webpage Scan',
+            items: validatedItems,
+            warnings: scannedWarnings,
+          };
+        }
+
+        return {
+          resolverId: resolver.id,
+          resolverLabel: resolver.label,
+          items: safeItems,
+          warnings: [
+            ...scannedWarnings,
+            'No safe downloadable file or hoster links found on HTML page',
+          ],
+        };
+      }
+
+      warnings.push(...scanned.warnings, 'No downloadable file or hoster links found on HTML page');
     }
 
     if (safeItems.length === 0) {

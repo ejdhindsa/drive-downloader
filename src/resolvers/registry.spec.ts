@@ -217,4 +217,60 @@ describe('ResolverRegistry', () => {
       }),
     ).rejects.toThrow(/Blocked private or reserved IP/);
   });
+
+  it('scans HTML pages during inspectUrls only and filters out DNS-rebinding links', async () => {
+    const lookupFn = async (host: string) => {
+      if (host === 'rebind.example') return [{ address: '10.0.0.5' }];
+      return [{ address: '93.184.216.34' }];
+    };
+
+    const htmlFetch: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (init?.method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        });
+      }
+      expect(url).toBe('https://mirror.example/files/');
+      return new Response(
+        `<html><body>
+          <a href="Movie.mkv">Movie.mkv</a>
+          <a href="https://rebind.example/secret.zip">secret.zip</a>
+        </body></html>`,
+        { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } },
+      );
+    };
+
+    const registry = createResolverRegistry();
+    const inspected = await registry.inspectUrls(['https://mirror.example/files/'], {
+      headers: [],
+      signal: new AbortController().signal,
+      fetchFn: htmlFetch,
+      lookupFn,
+    });
+
+    expect(inspected.items).toEqual([
+      {
+        downloadUrl: 'https://mirror.example/files/Movie.mkv',
+        filename: 'Movie.mkv',
+        sizeBytes: undefined,
+        sourceUrl: 'https://mirror.example/files/',
+        hoster: 'Direct',
+        category: 'video',
+      },
+    ]);
+    expect(inspected.warnings).toEqual([
+      'Blocked unsafe scanned link: https://rebind.example/secret.zip',
+    ]);
+
+    const directResolve = await registry.resolveUrl('https://mirror.example/files/', {
+      headers: [],
+      signal: new AbortController().signal,
+      fetchFn: htmlFetch,
+      lookupFn,
+    });
+    expect(directResolve.resolverId).toBe('direct');
+    expect(directResolve.items[0].category).toBe('other');
+  });
 });
