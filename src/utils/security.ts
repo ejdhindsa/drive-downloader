@@ -1,8 +1,8 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
-import { MIB, REDACTED_VALUE } from './consts';
-import type { CustomHeader, Job } from './types';
+import { MIB, REDACTED_VALUE } from '../consts';
+import type { CustomHeader, Job } from '../types';
 
 const BLOCKED_HOSTNAMES = new Set([
   'localhost',

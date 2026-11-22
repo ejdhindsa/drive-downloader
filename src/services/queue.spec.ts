@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { AppConfig } from './config';
+import type { AppConfig } from '../config';
+import type { Job } from '../types';
 import { JobQueueManager, buildAria2Args, parseAria2ProgressLine } from './queue';
 import {
   assertNoSkippedFiles,
@@ -11,7 +12,6 @@ import {
   runRcloneCopyUrl,
 } from './rclone';
 import { JobStore } from './store';
-import type { Job } from './types';
 
 function makeTestConfig(tmpDir: string, maxConcurrentJobs = 2): AppConfig {
   return {

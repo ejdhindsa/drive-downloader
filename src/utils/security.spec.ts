@@ -15,7 +15,7 @@ import {
   validateProxyUrl,
   validatePublicUrl,
 } from './security';
-import type { Job } from './types';
+import type { Job } from '../types';
 
 describe('IP & URL SSRF validation', () => {
   it('blocks loopback, RFC1918, CGNAT, link-local, and IPv6 private ranges', () => {

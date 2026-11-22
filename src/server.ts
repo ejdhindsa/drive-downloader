@@ -3,13 +3,13 @@ import path from 'node:path';
 import fastifyStatic from '@fastify/static';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { type AppConfig, loadConfig } from './config';
-import { type HttpSecurityOptions, registerHttpSecurity } from './http-security';
-import { refreshMediaTargets } from './jellyfin';
-import { JobQueueManager } from './queue';
-import { listDriveDirectories } from './rclone';
-import { sanitizeRelativePath } from './security';
-import { JobStore, verifyWritableDirectory } from './store';
+import { type HttpSecurityOptions, registerHttpSecurity } from './middleware/http-security';
+import { refreshMediaTargets } from './services/jellyfin';
+import { JobQueueManager } from './services/queue';
+import { listDriveDirectories } from './services/rclone';
+import { JobStore, verifyWritableDirectory } from './services/store';
 import type { CreateJobsRequest, Job } from './types';
+import { sanitizeRelativePath } from './utils/security';
 
 export interface BuildAppOptions {
   config: AppConfig;

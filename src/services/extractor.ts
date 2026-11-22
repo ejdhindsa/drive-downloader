@@ -8,8 +8,8 @@ import {
   GIB,
   MIB,
   RATIO_CHECK_MIN_BYTES,
-} from './consts';
-import { attachAbortKill } from './process';
+} from '../consts';
+import { attachAbortKill } from '../utils/process';
 
 export type ArchiveFormat = 'zip' | '7z' | 'rar' | 'tar';
 
