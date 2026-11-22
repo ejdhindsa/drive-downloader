@@ -14,8 +14,8 @@ import { JobQueueManager } from './services/queue';
 import { createDriveDirectory, listDriveDirectories } from './services/rclone';
 import { JobStore, verifyWritableDirectory } from './services/store';
 import { SystemStatsCollector } from './services/system-stats';
-import type { CreateJobsRequest, Job } from './types';
-import { sanitizeRelativePath } from './utils/security';
+import type { CreateJobsRequest, InspectRequest, InspectResponse, Job } from './types';
+import { sanitizeHeaders, sanitizeRelativePath } from './utils/security';
 
 export interface BuildAppOptions {
   config: AppConfig;
@@ -105,6 +105,45 @@ export async function buildApp(opts: BuildAppOptions): Promise<{
       });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
+  app.post<{ Body: InspectRequest }>('/api/inspect', async (request, reply) => {
+    const controller = new AbortController();
+    const onClose = () => controller.abort();
+    request.raw.once('close', onClose);
+    try {
+      const urls = Array.isArray(request.body?.urls) ? request.body.urls : [];
+      const headers = sanitizeHeaders(request.body?.headers);
+      const registry = queue.getResolverRegistry();
+      const [result, disk] = await Promise.all([
+        registry.inspectUrls(urls, {
+          headers,
+          signal: controller.signal,
+          proxyUrl: config.downloadProxy,
+        }),
+        queue.getDiskStatus().catch(() => ({ freeBytes: 0, totalBytes: 0 })),
+      ]);
+
+      const totalKnownBytes = result.items.reduce(
+        (sum, item) => sum + (item.sizeBytes && item.sizeBytes > 0 ? item.sizeBytes : 0),
+        0,
+      );
+      const fitsOnDisk = disk.freeBytes - totalKnownBytes >= config.minFreeDiskBytes;
+
+      const payload: InspectResponse = {
+        items: result.items.map((item) => ({ ...item, headers: undefined })),
+        warnings: result.warnings,
+        diskFreeBytes: disk.freeBytes,
+        minFreeDiskBytes: config.minFreeDiskBytes,
+        totalKnownBytes,
+        fitsOnDisk,
+      };
+      return payload;
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    } finally {
+      request.raw.off('close', onClose);
     }
   });
 

@@ -3,6 +3,8 @@ import type {
   CreateFolderResponse,
   CreateJobsPayload,
   FoldersResponse,
+  InspectPayload,
+  InspectResponse,
   Job,
   RefreshResponse,
   SystemStatsResponse,
@@ -59,6 +61,14 @@ export function createFolder(path: string): Promise<CreateFolderResponse> {
 export async function fetchJobs(): Promise<Job[]> {
   const data = await requestJson<{ jobs: Job[] }>('/api/jobs');
   return data.jobs ?? [];
+}
+
+export function inspectUrls(payload: InspectPayload): Promise<InspectResponse> {
+  return requestJson<InspectResponse>('/api/inspect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function enqueueJobs(payload: CreateJobsPayload): Promise<Job[]> {

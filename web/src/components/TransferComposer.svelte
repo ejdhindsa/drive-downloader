@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { enqueueJobs } from '../api/client';
-  import type { ConflictPolicy, CustomHeader, TransferMode } from '../api/types';
+  import { enqueueJobs, inspectUrls } from '../api/client';
+  import type { ConflictPolicy, CustomHeader, InspectResponse, TransferMode } from '../api/types';
   import { toasts } from '../stores/toasts.svelte';
   import { transferStore } from '../stores/transferStore.svelte';
   import { looksLikeCurlCommand, parseCurlCommand } from '../utils/curlParser';
+  import { formatBytes } from '../utils/format';
   import { suggestMediaDestination } from '../utils/mediaHints';
   import FolderBrowser from './FolderBrowser.svelte';
   import HeadersEditor from './HeadersEditor.svelte';
@@ -32,6 +33,8 @@
   let autoRefreshJellyfin = $state(true);
   let headers = $state<CustomHeader[]>([]);
   let submitting = $state(false);
+  let inspecting = $state(false);
+  let inspectResult = $state<InspectResponse | null>(null);
 
   $effect(() => {
     try {
@@ -226,6 +229,26 @@
     }
   }
 
+  async function handleInspect() {
+    if (parsedUrls.length === 0 || inspecting) return;
+    const activeHeaders = isDirect
+      ? []
+      : headers
+          .map((h) => ({ name: h.name.trim(), value: h.value.trim() }))
+          .filter((h) => h.name || h.value);
+    inspecting = true;
+    try {
+      inspectResult = await inspectUrls({
+        urls: parsedUrls,
+        headers: activeHeaders.length > 0 ? activeHeaders : undefined,
+      });
+    } catch (err) {
+      toasts.push('danger', err instanceof Error ? err.message : 'Failed to inspect URLs');
+    } finally {
+      inspecting = false;
+    }
+  }
+
   async function handleSubmit(event?: SubmitEvent) {
     event?.preventDefault();
     if (parsedUrls.length === 0) {
@@ -262,6 +285,7 @@
       rawUrls = '';
       customFilename = '';
       archivePassword = '';
+      inspectResult = null;
       toasts.push(
         'success',
         `Queued ${jobs.length} ${jobs.length === 1 ? 'transfer' : 'transfers'}.`,
@@ -330,11 +354,30 @@
                 : `${parsedUrls.length} URLs`}
           </span>
           <button type="button" class="mini-btn" onclick={handlePasteClipboard}>Paste</button>
+          {#if parsedUrls.length > 0}
+            <button
+              type="button"
+              class="mini-btn accent"
+              disabled={inspecting}
+              onclick={handleInspect}
+            >
+              {inspecting ? 'Checking...' : 'Inspect'}
+            </button>
+          {/if}
           {#if hasDuplicates || rawUrls.includes(' ')}
             <button type="button" class="mini-btn accent" onclick={handleCleanUrls}>Clean</button>
           {/if}
           {#if rawUrls.length > 0}
-            <button type="button" class="mini-btn" onclick={() => (rawUrls = '')}>Clear</button>
+            <button
+              type="button"
+              class="mini-btn"
+              onclick={() => {
+                rawUrls = '';
+                inspectResult = null;
+              }}
+            >
+              Clear
+            </button>
           {/if}
         </div>
       </div>
@@ -355,6 +398,59 @@
         </div>
       {/if}
     </div>
+
+    {#if inspectResult}
+      <div class="inspect-panel">
+        <div class="inspect-head">
+          <div class="inspect-summary">
+            <span class="inspect-title">
+              Pre-flight · {inspectResult.items.length}
+              {inspectResult.items.length === 1 ? 'file' : 'files'}
+            </span>
+            {#if inspectResult.totalKnownBytes > 0}
+              <span class="inspect-size mono">{formatBytes(inspectResult.totalKnownBytes)}</span>
+              <span class="disk-pill" class:danger={!inspectResult.fitsOnDisk}>
+                {inspectResult.fitsOnDisk
+                  ? `Fits on VPS (${formatBytes(inspectResult.diskFreeBytes)} free)`
+                  : `Tight VPS disk (${formatBytes(inspectResult.diskFreeBytes)} free)`}
+              </span>
+            {/if}
+          </div>
+          <button type="button" class="mini-btn" onclick={() => (inspectResult = null)}>
+            Dismiss
+          </button>
+        </div>
+
+        {#if inspectResult.items.length > 0}
+          <ul class="inspect-list">
+            {#each inspectResult.items as item, idx (`${item.downloadUrl}-${idx}`)}
+              <li class="inspect-row">
+                <div class="inspect-main">
+                  <span class="inspect-name">{item.filename || item.downloadUrl}</span>
+                  {#if item.note}
+                    <span class="inspect-note">{item.note}</span>
+                  {/if}
+                </div>
+                <div class="inspect-meta">
+                  <span class="hoster-pill">{item.hoster}</span>
+                  {#if item.sizeBytes}
+                    <span class="size-pill mono">{formatBytes(item.sizeBytes)}</span>
+                  {/if}
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+
+        {#if inspectResult.warnings.length > 0}
+          <div class="inspect-warnings">
+            {#each inspectResult.warnings as warning, idx (`${warning}-${idx}`)}
+              <div class="inspect-warning mono">{warning}</div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     {#if multipartSummary}
       <div class="multipart-banner">
@@ -775,6 +871,140 @@
     font-size: var(--uw-font-size-sm);
     font-weight: var(--uw-font-weight-semibold);
     pointer-events: none;
+  }
+
+  .inspect-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--uw-space-2);
+    padding: var(--uw-space-3);
+    border-radius: var(--uw-radius-lg);
+    border: 1px solid var(--uw-border-default);
+    background: var(--uw-bg-subtle);
+    animation: panelIn var(--uw-duration-normal) var(--uw-easing-emphasized);
+  }
+
+  .inspect-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--uw-space-2);
+    flex-wrap: wrap;
+  }
+
+  .inspect-summary {
+    display: flex;
+    align-items: center;
+    gap: var(--uw-space-2);
+    flex-wrap: wrap;
+  }
+
+  .inspect-title {
+    font-size: var(--uw-font-size-xs);
+    font-weight: var(--uw-font-weight-semibold);
+    color: var(--uw-fg-heading);
+  }
+
+  .inspect-size {
+    font-size: var(--uw-font-size-xs);
+    color: var(--uw-fg-muted);
+  }
+
+  .disk-pill {
+    font-size: 0.68rem;
+    font-weight: var(--uw-font-weight-semibold);
+    padding: 2px var(--uw-space-2);
+    border-radius: var(--uw-radius-full);
+    background: var(--uw-brand-bg);
+    border: 1px solid var(--uw-brand-border);
+    color: var(--uw-brand-fg);
+  }
+
+  .disk-pill.danger {
+    background: var(--uw-danger-bg);
+    border-color: var(--uw-danger-border);
+    color: var(--uw-danger-fg);
+  }
+
+  .inspect-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--uw-space-1-5);
+    max-height: 12rem;
+    overflow-y: auto;
+  }
+
+  .inspect-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--uw-space-2);
+    padding: var(--uw-space-1-5) var(--uw-space-2);
+    border-radius: var(--uw-radius-md);
+    background: var(--uw-bg-surface);
+    border: 1px solid var(--uw-border-subtle);
+  }
+
+  .inspect-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .inspect-name {
+    font-size: var(--uw-font-size-xs);
+    font-weight: var(--uw-font-weight-medium);
+    color: var(--uw-fg-default);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .inspect-note {
+    font-size: 0.7rem;
+    color: var(--uw-warning-fg);
+  }
+
+  .inspect-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--uw-space-1-5);
+    flex-shrink: 0;
+  }
+
+  .hoster-pill {
+    font-size: 0.66rem;
+    font-weight: var(--uw-font-weight-bold);
+    text-transform: uppercase;
+    letter-spacing: var(--uw-letter-spacing-wider);
+    padding: 2px 6px;
+    border-radius: var(--uw-radius-full);
+    background: var(--uw-info-bg);
+    border: 1px solid var(--uw-info-border);
+    color: var(--uw-info-fg);
+  }
+
+  .size-pill {
+    font-size: 0.72rem;
+    color: var(--uw-fg-muted);
+  }
+
+  .inspect-warnings {
+    display: flex;
+    flex-direction: column;
+    gap: var(--uw-space-1);
+    padding-top: var(--uw-space-1);
+    border-top: 1px solid var(--uw-border-subtle);
+  }
+
+  .inspect-warning {
+    font-size: 0.72rem;
+    color: var(--uw-danger-fg);
+    word-break: break-word;
   }
 
   .multipart-banner {

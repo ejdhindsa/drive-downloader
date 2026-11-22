@@ -17,6 +17,7 @@
   let isActive = $derived(
     job.status === 'queued' ||
       job.status === 'paused' ||
+      job.status === 'resolving' ||
       job.status === 'downloading' ||
       job.status === 'extracting' ||
       job.status === 'uploading',
@@ -41,15 +42,20 @@
   });
 
   let steps = $derived.by(() => {
+    const showResolve =
+      job.status === 'resolving' || Boolean(job.resolverName && job.resolverName !== 'Direct');
+    const resolveStep = showResolve ? [{ id: 'resolving', label: 'Resolve' }] : [];
     const list =
       job.mode === 'direct'
         ? [
             { id: 'queued', label: 'Queue' },
+            ...resolveStep,
             { id: 'uploading', label: 'Stream' },
             { id: 'completed', label: 'Done' },
           ]
         : [
             { id: 'queued', label: 'Queue' },
+            ...resolveStep,
             { id: 'downloading', label: 'Download' },
             ...(job.autoExtract ? [{ id: 'extracting', label: 'Extract' }] : []),
             { id: 'uploading', label: 'Upload' },
@@ -74,7 +80,7 @@
   });
 
   let progressWidth = $derived(
-    job.status === 'extracting'
+    job.status === 'resolving' || job.status === 'extracting'
       ? 100
       : job.status === 'completed'
         ? 100
@@ -173,6 +179,9 @@
     <div class="badges">
       {#if job.status === 'queued' && job.priority}
         <span class="badge priority-badge">Priority</span>
+      {/if}
+      {#if job.resolverName && job.resolverName !== 'Direct'}
+        <span class="badge resolver-badge">{job.resolverName}</span>
       {/if}
       {#if job.partUrls && job.partUrls.length > 1}
         <span class="badge parts-badge">{job.partUrls.length} parts</span>
@@ -354,6 +363,7 @@
     border-left-color: var(--uw-warning-solid);
   }
 
+  .job-card.status-resolving,
   .job-card.status-downloading {
     border-left-color: var(--uw-info-solid);
   }
@@ -491,6 +501,13 @@
     color: var(--uw-warning-fg);
   }
 
+  .resolver-badge {
+    background: var(--uw-brand-bg);
+    border-color: var(--uw-brand-border);
+    color: var(--uw-brand-fg);
+  }
+
+  .badge-resolving,
   .badge-downloading {
     background: var(--uw-info-bg);
     border-color: var(--uw-info-border);
@@ -614,6 +631,11 @@
     border-radius: var(--uw-radius-full);
     background: var(--uw-brand-solid);
     transition: width var(--uw-duration-normal) var(--uw-easing-standard);
+  }
+
+  .progress-fill.bar-resolving {
+    background: var(--uw-info-solid);
+    animation: pulse-dot 1.2s ease-in-out infinite;
   }
 
   .progress-fill.bar-downloading {

@@ -5,6 +5,7 @@ export type ConflictPolicy = 'skip' | 'overwrite' | 'rename';
 export type JobStatus =
   | 'queued'
   | 'paused'
+  | 'resolving'
   | 'downloading'
   | 'extracting'
   | 'uploading'
@@ -34,6 +35,7 @@ export interface Job {
   destinationRemote: string;
   customFilename?: string;
   resolvedFilename?: string;
+  resolverName?: string;
   mode: TransferMode;
   autoExtract: boolean;
   autoRefreshJellyfin: boolean;
@@ -120,6 +122,30 @@ export interface RefreshResponse {
   rcloneRefreshed: boolean;
   jellyfinRefreshed: boolean;
   messages: string[];
+}
+
+export interface ResolvedTarget {
+  downloadUrl: string;
+  filename?: string;
+  sizeBytes?: number;
+  mimeType?: string;
+  sourceUrl?: string;
+  hoster: string;
+  note?: string;
+}
+
+export interface InspectPayload {
+  urls: string[];
+  headers?: CustomHeader[];
+}
+
+export interface InspectResponse {
+  items: ResolvedTarget[];
+  warnings: string[];
+  diskFreeBytes: number;
+  minFreeDiskBytes: number;
+  totalKnownBytes: number;
+  fitsOnDisk: boolean;
 }
 
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting';

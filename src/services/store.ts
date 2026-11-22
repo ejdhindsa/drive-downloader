@@ -9,6 +9,7 @@ export const MAX_FINISHED_JOBS = 200;
 export function isActiveOrQueuedStatus(status: Job['status']): boolean {
   return (
     status === 'queued' ||
+    status === 'resolving' ||
     status === 'downloading' ||
     status === 'extracting' ||
     status === 'uploading'

@@ -5,6 +5,7 @@ export type ConflictPolicy = 'skip' | 'overwrite' | 'rename';
 export type JobStatus =
   | 'queued'
   | 'paused'
+  | 'resolving'
   | 'downloading'
   | 'extracting'
   | 'uploading'
@@ -34,6 +35,7 @@ export interface Job {
   destinationRemote: string;
   customFilename?: string;
   resolvedFilename?: string;
+  resolverName?: string;
   mode: TransferMode;
   conflictPolicy?: ConflictPolicy;
   autoExtract: boolean;
@@ -92,4 +94,29 @@ export interface SystemStats {
   memory: MemoryStats;
   disk: DiskStatus & { usedPercent: number };
   driveQuota: DriveQuotaStats | null;
+}
+
+export interface ResolvedTarget {
+  downloadUrl: string;
+  filename?: string;
+  sizeBytes?: number;
+  mimeType?: string;
+  headers?: CustomHeader[];
+  sourceUrl?: string;
+  hoster: string;
+  note?: string;
+}
+
+export interface InspectRequest {
+  urls: string[];
+  headers?: CustomHeader[];
+}
+
+export interface InspectResponse {
+  items: ResolvedTarget[];
+  warnings: string[];
+  diskFreeBytes: number;
+  minFreeDiskBytes: number;
+  totalKnownBytes: number;
+  fitsOnDisk: boolean;
 }

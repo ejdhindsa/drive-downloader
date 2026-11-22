@@ -17,13 +17,13 @@ import {
   redactHeaders,
   redactJobForOutput,
   redactProxyUrl,
-  resolveSafeUrl,
   sanitizeFilename,
   sanitizeFolderName,
   sanitizeHeaders,
   sanitizeRelativePath,
   validatePublicUrl,
 } from '../utils/security';
+import { createResolverRegistry, type ResolverRegistry } from '../resolvers/registry';
 import {
   extractArchive,
   groupMultipartUrls,
@@ -165,9 +165,26 @@ export function buildAria2Args(
   return args;
 }
 
+function mergeExecutionHeaders(
+  base: CustomHeader[],
+  extra?: CustomHeader[],
+): CustomHeader[] {
+  if (!extra || extra.length === 0) return base;
+  const seen = new Set(base.map((h) => h.name.toLowerCase()));
+  const merged = [...base];
+  for (const h of extra) {
+    if (!seen.has(h.name.toLowerCase())) {
+      merged.push(h);
+      seen.add(h.name.toLowerCase());
+    }
+  }
+  return merged;
+}
+
 export class JobQueueManager extends EventEmitter {
   private readonly config: AppConfig;
   private readonly store: JobStore;
+  private readonly resolverRegistry: ResolverRegistry;
   private jobs: Job[] = [];
   private readonly activeControllers = new Map<string, AbortController>();
   private readonly activeRuns = new Set<Promise<void>>();
@@ -180,10 +197,15 @@ export class JobQueueManager extends EventEmitter {
   private prioritySeq = 1;
   private shuttingDown = false;
 
-  constructor(config: AppConfig, store: JobStore) {
+  constructor(config: AppConfig, store: JobStore, resolverRegistry?: ResolverRegistry) {
     super();
     this.config = config;
     this.store = store;
+    this.resolverRegistry = resolverRegistry ?? createResolverRegistry();
+  }
+
+  getResolverRegistry(): ResolverRegistry {
+    return this.resolverRegistry;
   }
 
   async init(): Promise<void> {
@@ -709,12 +731,28 @@ export class JobQueueManager extends EventEmitter {
   }
 
   private async executeDirectStream(job: Job, signal: AbortSignal): Promise<void> {
-    job.status = 'uploading';
-    job.phaseLabel = 'Direct streaming to Drive';
-    const safeUrl = await resolveSafeUrl(job.url, {
+    job.status = 'resolving';
+    job.phaseLabel = 'Resolving link...';
+    this.emitJob(job, true);
+
+    const executionHeaders = this.getExecutionHeaders(job);
+    const resolved = await this.resolverRegistry.resolveUrl(job.url, {
+      headers: executionHeaders,
       signal,
       proxyUrl: this.config.downloadProxy,
+      onLog: (line) => {
+        this.appendLog(job, line);
+        this.emitJob(job);
+      },
     });
+    const target = resolved.items[0];
+    job.resolverName = target.hoster;
+    if (!job.customFilename && target.filename) {
+      job.resolvedFilename = target.filename;
+    }
+
+    job.status = 'uploading';
+    job.phaseLabel = 'Direct streaming to Drive';
     if (this.config.downloadProxy) {
       this.appendLog(job, `Using proxy: ${redactProxyUrl(this.config.downloadProxy)}`);
     }
@@ -724,11 +762,11 @@ export class JobQueueManager extends EventEmitter {
     await runRcloneCopyUrl(
       this.config,
       {
-        url: safeUrl,
+        url: target.downloadUrl,
         destRemoteDir: job.destinationRemote,
-        customFilename: job.customFilename,
+        customFilename: job.customFilename || target.filename,
         conflictPolicy: job.conflictPolicy,
-        headers: this.getExecutionHeaders(job),
+        headers: mergeExecutionHeaders(executionHeaders, target.headers),
         proxyUrl: this.config.downloadProxy,
       },
       {
@@ -779,18 +817,36 @@ export class JobQueueManager extends EventEmitter {
     const urlsToDownload = job.partUrls && job.partUrls.length > 1 ? job.partUrls : [job.url];
     const isMultiPart = urlsToDownload.length > 1;
 
-    job.status = 'downloading';
     if (this.config.downloadProxy) {
       this.appendLog(job, `Using proxy: ${redactProxyUrl(this.config.downloadProxy)}`);
     }
 
     for (let i = 0; i < urlsToDownload.length; i += 1) {
-      const safeUrl = await resolveSafeUrl(urlsToDownload[i], {
+      job.status = 'resolving';
+      job.phaseLabel = isMultiPart
+        ? `Resolving part ${i + 1}/${urlsToDownload.length}...`
+        : 'Resolving link...';
+      this.emitJob(job, true);
+
+      const resolved = await this.resolverRegistry.resolveUrl(urlsToDownload[i], {
         headers: executionHeaders,
         signal,
         proxyUrl: this.config.downloadProxy,
+        onLog: (line) => {
+          this.appendLog(job, line);
+          this.emitJob(job);
+        },
       });
+      const target = resolved.items[0];
+      job.resolverName = target.hoster;
+      if (!isMultiPart && !job.customFilename && target.filename) {
+        job.resolvedFilename = target.filename;
+      }
 
+      const partHeaders = mergeExecutionHeaders(executionHeaders, target.headers);
+      const partFilename = isMultiPart ? target.filename : job.customFilename || target.filename;
+
+      job.status = 'downloading';
       job.phaseLabel = isMultiPart
         ? `Downloading part ${i + 1}/${urlsToDownload.length} (aria2c 16x)`
         : 'Downloading to VPS (aria2c 16x)';
@@ -803,7 +859,7 @@ export class JobQueueManager extends EventEmitter {
       );
       this.emitJob(job, true);
 
-      await this.runAria2c(job, safeUrl, executionHeaders, jobStagingDir, signal);
+      await this.runAria2c(job, target.downloadUrl, partHeaders, jobStagingDir, signal, partFilename);
     }
 
     const downloadedEntries = (await fs.readdir(jobStagingDir)).filter(
@@ -914,6 +970,7 @@ export class JobQueueManager extends EventEmitter {
     headers: CustomHeader[],
     stagingDir: string,
     signal: AbortSignal,
+    overrideFilename?: string,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       if (signal.aborted) {
@@ -924,7 +981,7 @@ export class JobQueueManager extends EventEmitter {
       const args = buildAria2Args(
         {
           url: downloadUrl,
-          customFilename: job.customFilename,
+          customFilename: overrideFilename ?? job.customFilename,
           headers,
         },
         stagingDir,
