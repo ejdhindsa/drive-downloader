@@ -1,9 +1,14 @@
+import fs from 'node:fs';
 import type { ServerResponse } from 'node:http';
 import path from 'node:path';
 import fastifyStatic from '@fastify/static';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { type AppConfig, loadConfig } from './config';
-import { type HttpSecurityOptions, registerHttpSecurity } from './middleware/http-security';
+import {
+  type HttpSecurityOptions,
+  extractInlineScriptHashes,
+  registerHttpSecurity,
+} from './middleware/http-security';
 import { refreshMediaTargets } from './services/jellyfin';
 import { JobQueueManager } from './services/queue';
 import { listDriveDirectories } from './services/rclone';
@@ -31,13 +36,22 @@ export async function buildApp(opts: BuildAppOptions): Promise<{
     bodyLimit: 1024 * 1024,
   });
 
-  registerHttpSecurity(app, opts.security);
+  const publicDir = path.resolve(__dirname, '../public');
+  const indexHtmlPath = path.join(publicDir, 'index.html');
+  const scriptHashes =
+    opts.security?.scriptHashes ??
+    (fs.existsSync(indexHtmlPath)
+      ? extractInlineScriptHashes(fs.readFileSync(indexHtmlPath, 'utf8'))
+      : []);
 
-  const publicDir = path.resolve(__dirname, '../../public');
-  await app.register(fastifyStatic, {
-    root: publicDir,
-    prefix: '/',
-  });
+  registerHttpSecurity(app, { ...opts.security, scriptHashes });
+
+  if (fs.existsSync(publicDir)) {
+    await app.register(fastifyStatic, {
+      root: publicDir,
+      prefix: '/',
+    });
+  }
 
   const statsCollector = new SystemStatsCollector(config);
 

@@ -1,19 +1,35 @@
+import crypto from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
-// Inline script/style allowance is temporary until PR 2 moves the UI into compiled Svelte bundles.
-const DEFAULT_CSP = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' https://fonts.gstatic.com",
-  "img-src 'self' data:",
-  "connect-src 'self'",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-].join('; ');
+export function extractInlineScriptHashes(html: string): string[] {
+  const hashes: string[] = [];
+  const scriptRegex = /<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = scriptRegex.exec(html)) !== null) {
+    const content = match[1];
+    if (!content) continue;
+    const digest = crypto.createHash('sha256').update(content, 'utf8').digest('base64');
+    hashes.push(`'sha256-${digest}'`);
+  }
+  return hashes;
+}
+
+export function buildCsp(scriptHashes: string[] = []): string {
+  const scriptSrc = ["'self'", ...scriptHashes].join(' ');
+  return [
+    "default-src 'self'",
+    `script-src ${scriptSrc}`,
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; ');
+}
 
 export interface RateLimitDecision {
   allowed: boolean;
@@ -115,6 +131,7 @@ export function verifySameOriginRequest(request: FastifyRequest): string | null 
 
 export interface HttpSecurityOptions {
   csp?: string;
+  scriptHashes?: string[];
   rateLimitWindowMs?: number;
   rateLimitMaxRequests?: number;
 }
@@ -123,7 +140,7 @@ export function registerHttpSecurity(
   app: FastifyInstance,
   opts: HttpSecurityOptions = {},
 ): { rateLimiter: RateLimiter } {
-  const csp = opts.csp ?? DEFAULT_CSP;
+  const csp = opts.csp ?? buildCsp(opts.scriptHashes);
   const rateLimiter = createRateLimiter({
     windowMs: opts.rateLimitWindowMs ?? 60_000,
     maxRequests: opts.rateLimitMaxRequests ?? 60,

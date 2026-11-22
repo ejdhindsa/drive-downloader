@@ -83,6 +83,7 @@ describe('HTTP security headers, CSRF, rate limiting, and API redaction', () => 
       expect(res.headers['x-frame-options']).toBe('DENY');
       expect(res.headers['referrer-policy']).toBe('no-referrer');
       expect(res.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+      expect(res.headers['content-security-policy']).not.toContain("script-src 'self' 'unsafe-inline'");
 
       const body = res.json();
       expect(body.proxyConfigured).toBe(true);

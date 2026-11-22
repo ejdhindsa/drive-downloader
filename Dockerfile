@@ -4,9 +4,13 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
+COPY web/package*.json ./web/
+RUN npm --prefix web ci
+
 COPY tsconfig*.json ./
 COPY src ./src
-RUN npm run build
+COPY web ./web
+RUN npm run build && npm --prefix web run build
 
 FROM node:22-alpine AS runtime
 WORKDIR /app
@@ -30,7 +34,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=builder /app/dist/src ./dist/src
-COPY public ./public
+COPY --from=builder /app/dist/public ./dist/public
 
 RUN mkdir -p /app/data /tmp/staging /config/rclone && \
     chown -R 1000:1000 /app /tmp/staging /config/rclone
