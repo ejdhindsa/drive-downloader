@@ -8,6 +8,10 @@
   $effect(() => {
     return transferStore.start();
   });
+
+  $effect(() => {
+    document.title = transferStore.tabTitle;
+  });
 </script>
 
 <div class="shell">

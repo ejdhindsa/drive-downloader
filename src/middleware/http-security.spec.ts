@@ -12,6 +12,7 @@ const tempDirs: string[] = [];
 async function createTestServer(overrides?: {
   downloadProxy?: string;
   rateLimitMaxRequests?: number;
+  extraConfig?: Partial<AppConfig>;
 }) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'drive-dl-http-sec-'));
   tempDirs.push(tmpDir);
@@ -30,6 +31,7 @@ async function createTestServer(overrides?: {
     jellyfinUrl: '',
     jellyfinApiKey: '',
     rcloneRcUrl: '',
+    ...overrides?.extraConfig,
   };
 
   const store = new JobStore(config.dataDir);
@@ -72,9 +74,19 @@ afterEach(async () => {
 });
 
 describe('HTTP security headers, CSRF, rate limiting, and API redaction', () => {
-  it('attaches security headers and hides proxy credentials from /api/config', async () => {
+  it('attaches security headers and hides proxy credentials and webhook secrets from /api/config', async () => {
     const { app, closeSseClients } = await createTestServer({
       downloadProxy: 'http://user:topsecret@gluetun:8888',
+      extraConfig: {
+        audiobookshelfUrl: 'http://audiobookshelf:80',
+        audiobookshelfApiKey: 'abs-secret-token',
+        postUploadWebhookUrl: 'https://hooks.example.com/secret-upload-hook',
+        discordWebhookUrl: 'https://discord.com/api/webhooks/999/discord-secret',
+        ntfyUrl: 'https://ntfy.sh/secret-topic',
+        telegramBotToken: '123:telegram-secret',
+        telegramChatId: '456789',
+        notifyInactiveSeconds: 300,
+      },
     });
     try {
       const res = await app.inject({ method: 'GET', url: '/api/config' });
@@ -87,8 +99,17 @@ describe('HTTP security headers, CSRF, rate limiting, and API redaction', () => 
 
       const body = res.json();
       expect(body.proxyConfigured).toBe(true);
+      expect(body.audiobookshelfConfigured).toBe(true);
+      expect(body.postUploadWebhookConfigured).toBe(true);
+      expect(body.notificationsConfigured).toBe(true);
+      expect(body.notifyInactiveSeconds).toBe(300);
       expect(JSON.stringify(body)).not.toContain('topsecret');
       expect(JSON.stringify(body)).not.toContain('gluetun');
+      expect(JSON.stringify(body)).not.toContain('abs-secret-token');
+      expect(JSON.stringify(body)).not.toContain('secret-upload-hook');
+      expect(JSON.stringify(body)).not.toContain('discord-secret');
+      expect(JSON.stringify(body)).not.toContain('secret-topic');
+      expect(JSON.stringify(body)).not.toContain('telegram-secret');
     } finally {
       closeSseClients();
       await app.close();

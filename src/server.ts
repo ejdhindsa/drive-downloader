@@ -4,12 +4,14 @@ import path from 'node:path';
 import fastifyStatic from '@fastify/static';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { type AppConfig, loadConfig } from './config';
+import { DEFAULT_NOTIFY_INACTIVE_SECONDS } from './consts';
 import {
   type HttpSecurityOptions,
   extractInlineScriptHashes,
   registerHttpSecurity,
 } from './middleware/http-security';
-import { refreshMediaTargets } from './services/jellyfin';
+import { hasAnyMediaRefreshTarget, refreshMediaTargets } from './services/media-refresh';
+import { hasConfiguredNotificationChannel } from './services/notifications';
 import { JobQueueManager } from './services/queue';
 import { createDriveDirectory, listDriveDirectories } from './services/rclone';
 import { JobStore, verifyWritableDirectory } from './services/store';
@@ -70,6 +72,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<{
       rcloneRoot: config.rcloneRoot,
       jellyfinConfigured: Boolean(config.jellyfinUrl && config.jellyfinApiKey),
       rcloneRcConfigured: Boolean(config.rcloneRcUrl),
+      audiobookshelfConfigured: Boolean(config.audiobookshelfUrl && config.audiobookshelfApiKey),
+      postUploadWebhookConfigured: Boolean(config.postUploadWebhookUrl),
+      notificationsConfigured: hasConfiguredNotificationChannel(config),
+      notifyInactiveSeconds:
+        config.notifyInactiveSeconds ?? DEFAULT_NOTIFY_INACTIVE_SECONDS,
       proxyConfigured: Boolean(config.downloadProxy),
       ytDlpAvailable,
       maxConcurrentJobs: config.maxConcurrentJobs,
@@ -77,6 +84,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<{
       maxExtractBytes: config.maxExtractBytes,
       disk,
     };
+  });
+
+  app.post('/api/presence', async () => {
+    queue.getPresenceTracker().markActive();
+    return { ok: true };
   });
 
   app.get<{ Querystring: { path?: string; refresh?: string } }>(
@@ -238,13 +250,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<{
     return { removed };
   });
 
-  app.post('/api/jellyfin/refresh', async (_request, reply) => {
-    if (!config.jellyfinUrl && !config.rcloneRcUrl) {
-      return reply.code(400).send({ error: 'Neither Jellyfin nor rclone RC is configured' });
+  const handleMediaRefresh = async (_request: unknown, reply: { code: (s: number) => { send: (b: unknown) => unknown } }) => {
+    if (!hasAnyMediaRefreshTarget(config)) {
+      return reply.code(400).send({ error: 'No media refresh or webhook target is configured' });
     }
-    const result = await refreshMediaTargets(config);
-    return result;
-  });
+    return refreshMediaTargets(config);
+  };
+
+  app.post('/api/jellyfin/refresh', handleMediaRefresh);
+  app.post('/api/media/refresh', handleMediaRefresh);
 
   const sseClients = new Set<ServerResponse>();
   let shuttingDown = false;

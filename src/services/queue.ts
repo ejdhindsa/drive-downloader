@@ -31,7 +31,8 @@ import {
   pickEntryArchiveFile,
   sanitizeArchivePassword,
 } from './extractor';
-import { refreshMediaTargets } from './jellyfin';
+import { refreshMediaTargets } from './media-refresh';
+import { ClientPresenceTracker, dispatchJobNotification } from './notifications';
 import { assertNoSkippedFiles, runRcloneCopyUrl, runRcloneMove } from './rclone';
 import {
   type JobStore,
@@ -195,18 +196,29 @@ export class JobQueueManager extends EventEmitter {
   private readonly livePasswords = new Map<string, string>();
   private readonly pausedIds = new Set<string>();
   private readonly resumeStagingDirs = new Map<string, string>();
+  private readonly presence: ClientPresenceTracker;
   private prioritySeq = 1;
   private shuttingDown = false;
 
-  constructor(config: AppConfig, store: JobStore, resolverRegistry?: ResolverRegistry) {
+  constructor(
+    config: AppConfig,
+    store: JobStore,
+    resolverRegistry?: ResolverRegistry,
+    presence?: ClientPresenceTracker,
+  ) {
     super();
     this.config = config;
     this.store = store;
     this.resolverRegistry = resolverRegistry ?? createResolverRegistry();
+    this.presence = presence ?? new ClientPresenceTracker();
   }
 
   getResolverRegistry(): ResolverRegistry {
     return this.resolverRegistry;
+  }
+
+  getPresenceTracker(): ClientPresenceTracker {
+    return this.presence;
   }
 
   async init(): Promise<void> {
@@ -672,7 +684,11 @@ export class JobQueueManager extends EventEmitter {
 
       if (job.autoRefreshJellyfin) {
         const relDir = [job.folder, job.subfolder].filter(Boolean).join('/');
-        const refresh = await refreshMediaTargets(this.config, relDir);
+        const refresh = await refreshMediaTargets(this.config, {
+          remoteRelativeDir: relDir,
+          filename: job.resolvedFilename,
+          destinationRemote: job.destinationRemote,
+        });
         for (const msg of refresh.messages) {
           this.appendLog(job, msg);
         }
@@ -747,6 +763,13 @@ export class JobQueueManager extends EventEmitter {
       this.emitJob(job, true);
       if (this.jobs.length !== beforeCount) {
         this.emit('jobs-changed', this.listJobs());
+      }
+      if (outcome.status === 'completed' || outcome.status === 'failed') {
+        void dispatchJobNotification(
+          this.config,
+          { kind: outcome.status, job },
+          { presence: this.presence },
+        ).catch(() => {});
       }
       this.pumpQueue();
     }

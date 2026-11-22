@@ -143,7 +143,15 @@ export async function clearFinishedJobs(): Promise<number> {
 }
 
 export function triggerMediaRefresh(): Promise<RefreshResponse> {
-  return requestJson<RefreshResponse>('/api/jellyfin/refresh', {
+  return requestJson<RefreshResponse>('/api/media/refresh', {
     method: 'POST',
   });
+}
+
+export async function sendPresenceHeartbeat(): Promise<void> {
+  try {
+    await fetch('/api/presence', { method: 'POST' });
+  } catch {
+    // Presence heartbeats are best-effort.
+  }
 }
