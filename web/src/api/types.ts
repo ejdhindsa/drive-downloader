@@ -49,6 +49,31 @@ export interface DiskStatus {
   totalBytes: number;
 }
 
+export interface CpuStats {
+  percent: number;
+  cores: number;
+  loadAvg1m: number;
+}
+
+export interface MemoryStats {
+  usedBytes: number;
+  totalBytes: number;
+  usedPercent: number;
+}
+
+export interface DriveQuotaStats {
+  usedBytes: number;
+  freeBytes: number;
+  totalBytes: number;
+}
+
+export interface SystemStatsResponse {
+  cpu: CpuStats;
+  memory: MemoryStats;
+  disk: DiskStatus & { usedPercent: number };
+  driveQuota: DriveQuotaStats | null;
+}
+
 export interface AppConfigResponse {
   rcloneRoot: string;
   jellyfinConfigured: boolean;

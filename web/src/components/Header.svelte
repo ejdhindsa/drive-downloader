@@ -2,16 +2,30 @@
   import { triggerMediaRefresh } from '../api/client';
   import { toasts } from '../stores/toasts.svelte';
   import { transferStore } from '../stores/transferStore.svelte';
-  import { formatBytes, formatSpeed } from '../utils/format';
+  import TelemetryBar from './TelemetryBar.svelte';
   import ThemeToggle from './ThemeToggle.svelte';
 
+  const STORAGE_KEY = 'drive-downloader:telemetry-open';
+
+  function readInitialOpen(): boolean {
+    try {
+      return localStorage.getItem(STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  let telemetryOpen = $state(readInitialOpen());
   let refreshing = $state(false);
 
-  let freeDiskLabel = $derived(
-    transferStore.config?.disk?.freeBytes
-      ? `${formatBytes(transferStore.config.disk.freeBytes)} free`
-      : 'Disk --',
-  );
+  $effect(() => {
+    transferStore.setTelemetryOpen(telemetryOpen);
+    try {
+      localStorage.setItem(STORAGE_KEY, telemetryOpen ? '1' : '0');
+    } catch {
+      // Ignore storage quota / private mode failures.
+    }
+  });
 
   let statusLabel = $derived(
     transferStore.connectionState === 'live'
@@ -20,6 +34,15 @@
         ? 'Reconnecting'
         : 'Connecting',
   );
+
+  let telemetryTone = $derived.by<'success' | 'warning' | 'danger'>(() => {
+    const stats = transferStore.stats;
+    if (!stats) return 'success';
+    const peak = Math.max(stats.cpu.percent, stats.memory.usedPercent, stats.disk.usedPercent);
+    if (peak >= 90) return 'danger';
+    if (peak >= 75) return 'warning';
+    return 'success';
+  });
 
   async function handleRefreshMedia() {
     refreshing = true;
@@ -35,73 +58,86 @@
   }
 </script>
 
-<header class="topbar">
-  <div class="brand">
-    <span class="material-symbols-outlined brand-icon" aria-hidden="true">cloud_sync</span>
-    <div>
-      <h1>Drive Downloader</h1>
-      <p class="subtitle">Staged &amp; direct transfers to Google Drive</p>
-    </div>
-  </div>
-
-  <div class="telemetry">
-    {#if transferStore.activeCount > 0}
-      <div class="pill speed-pill">
-        <span class="badge-count">{transferStore.activeCount}</span>
-        <span class="mono">{formatSpeed(transferStore.totalSpeedBytesPerSec)}</span>
-      </div>
-    {/if}
-
-    <div class="pill disk-pill" title="VPS staging disk headroom">
-      <div class="disk-meta">
-        <span class="disk-label">{freeDiskLabel}</span>
-        {#if transferStore.diskUsedPercent !== null}
-          <span class="disk-pct mono">{transferStore.diskUsedPercent}%</span>
-        {/if}
-      </div>
-      <div class="disk-track" aria-hidden="true">
-        <div
-          class="disk-fill tone-{transferStore.diskTone}"
-          style:width={`${transferStore.diskUsedPercent ?? 0}%`}
-        ></div>
+<header class="header-wrap">
+  <div class="topbar">
+    <div class="brand">
+      <span class="material-symbols-outlined brand-icon" aria-hidden="true">cloud_sync</span>
+      <div>
+        <h1>Drive Downloader</h1>
+        <p class="subtitle">Staged &amp; direct transfers to Google Drive</p>
       </div>
     </div>
 
-    <div class="pill sse-pill">
-      <span class="status-dot state-{transferStore.connectionState}" aria-hidden="true"></span>
-      <span>{statusLabel}</span>
-    </div>
+    <div class="controls">
+      {#if transferStore.activeCount > 0}
+        <div class="pill active-pill">
+          <span class="badge-count">{transferStore.activeCount}</span>
+          <span>Active</span>
+        </div>
+      {/if}
 
-    {#if transferStore.config?.proxyConfigured}
-      <div class="pill proxy-pill" title="Outbound downloads routed through configured proxy">
-        Proxy
+      <div class="pill sse-pill">
+        <span class="status-dot state-{transferStore.connectionState}" aria-hidden="true"></span>
+        <span>{statusLabel}</span>
       </div>
-    {/if}
 
-    {#if transferStore.hasMediaRefresh}
+      {#if transferStore.config?.proxyConfigured}
+        <div class="pill proxy-pill" title="Outbound downloads routed through configured proxy">
+          Proxy
+        </div>
+      {/if}
+
       <button
         type="button"
-        class="action-btn"
-        disabled={refreshing}
-        onclick={handleRefreshMedia}
+        class="action-btn telemetry-btn"
+        class:open={telemetryOpen}
+        aria-expanded={telemetryOpen}
+        onclick={() => (telemetryOpen = !telemetryOpen)}
       >
-        {refreshing ? 'Refreshing...' : 'Refresh Media'}
+        <span class="metric-dot tone-{telemetryTone}" aria-hidden="true"></span>
+        <span>System</span>
+        <svg class="chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path
+            d="M4 6l4 4 4-4"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.75"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
       </button>
-    {/if}
 
-    <ThemeToggle />
+      {#if transferStore.hasMediaRefresh}
+        <button
+          type="button"
+          class="action-btn"
+          disabled={refreshing}
+          onclick={handleRefreshMedia}
+        >
+          {refreshing ? 'Refreshing...' : 'Refresh Media'}
+        </button>
+      {/if}
+
+      <ThemeToggle />
+    </div>
   </div>
+
+  <TelemetryBar open={telemetryOpen} />
 </header>
 
 <style>
+  .header-wrap {
+    padding-bottom: var(--uw-space-5);
+    border-bottom: 1px solid var(--uw-border-subtle);
+  }
+
   .topbar {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: var(--uw-space-4);
-    padding-bottom: var(--uw-space-5);
-    border-bottom: 1px solid var(--uw-border-subtle);
   }
 
   .brand {
@@ -133,7 +169,7 @@
     margin-top: var(--uw-space-0-5);
   }
 
-  .telemetry {
+  .controls {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -154,7 +190,7 @@
     font-weight: var(--uw-font-weight-medium);
   }
 
-  .speed-pill {
+  .active-pill {
     background: var(--uw-brand-bg);
     border-color: var(--uw-brand-border);
     color: var(--uw-brand-fg);
@@ -173,82 +209,38 @@
     font-weight: var(--uw-font-weight-bold);
   }
 
-  .disk-pill {
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--uw-space-1);
-    min-width: 8.5rem;
-    padding: var(--uw-space-1) var(--uw-space-3);
-    border-radius: var(--uw-radius-lg);
-  }
-
-  .disk-meta {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--uw-space-2);
-    line-height: var(--uw-line-height-none);
-  }
-
-  .disk-label {
-    color: var(--uw-fg-default);
-  }
-
-  .disk-pct {
-    color: var(--uw-fg-muted);
-  }
-
-  .disk-track {
-    width: 100%;
-    height: 0.25rem;
-    border-radius: var(--uw-radius-full);
-    background: var(--uw-bg-subtle);
-    overflow: hidden;
-  }
-
-  .disk-fill {
-    height: 100%;
-    border-radius: var(--uw-radius-full);
-    transition: width var(--uw-duration-normal) var(--uw-easing-standard);
-  }
-
-  .disk-fill.tone-success {
-    background: var(--uw-success-solid);
-  }
-
-  .disk-fill.tone-warning {
-    background: var(--uw-warning-solid);
-  }
-
-  .disk-fill.tone-danger {
-    background: var(--uw-danger-solid);
-  }
-
   .proxy-pill {
     background: var(--uw-info-bg);
     border-color: var(--uw-info-border);
     color: var(--uw-info-fg);
   }
 
-  .status-dot {
+  .status-dot,
+  .metric-dot {
     width: 0.5rem;
     height: 0.5rem;
     border-radius: var(--uw-radius-full);
   }
 
-  .status-dot.state-live {
+  .status-dot.state-live,
+  .metric-dot.tone-success {
     background: var(--uw-success-solid);
   }
 
-  .status-dot.state-connecting {
+  .status-dot.state-connecting,
+  .metric-dot.tone-warning {
     background: var(--uw-warning-solid);
   }
 
-  .status-dot.state-reconnecting {
+  .status-dot.state-reconnecting,
+  .metric-dot.tone-danger {
     background: var(--uw-danger-solid);
   }
 
   .action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--uw-space-2);
     border: 1px solid var(--uw-border-default);
     background: var(--uw-bg-surface);
     color: var(--uw-fg-default);
@@ -272,5 +264,19 @@
   .action-btn:disabled {
     opacity: 0.55;
     cursor: not-allowed;
+  }
+
+  .telemetry-btn.open {
+    background: var(--uw-brand-bg);
+    border-color: var(--uw-brand-border);
+    color: var(--uw-brand-fg);
+  }
+
+  .chevron {
+    transition: transform var(--uw-duration-normal) var(--uw-easing-emphasized);
+  }
+
+  .telemetry-btn.open .chevron {
+    transform: rotate(180deg);
   }
 </style>

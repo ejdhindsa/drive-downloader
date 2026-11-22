@@ -1,5 +1,10 @@
-import { fetchConfig, fetchJobs } from '../api/client';
-import type { AppConfigResponse, ConnectionState, Job } from '../api/types';
+import { fetchConfig, fetchJobs, fetchStats } from '../api/client';
+import type {
+  AppConfigResponse,
+  ConnectionState,
+  Job,
+  SystemStatsResponse,
+} from '../api/types';
 
 function isActiveJob(job: Job): boolean {
   return (
@@ -12,36 +17,25 @@ function isActiveJob(job: Job): boolean {
 
 class TransferStore {
   config = $state<AppConfigResponse | null>(null);
+  stats = $state<SystemStatsResponse | null>(null);
   jobs = $state<Job[]>([]);
   connectionState = $state<ConnectionState>('connecting');
 
   activeJobs = $derived(this.jobs.filter(isActiveJob));
   activeCount = $derived(this.activeJobs.length);
 
-  totalSpeedBytesPerSec = $derived(
-    this.activeJobs.reduce((sum, job) => {
-      if (job.status === 'downloading' || job.status === 'uploading') {
-        return sum + (job.progress?.speedBytesPerSec ?? 0);
-      }
-      return sum;
-    }, 0),
+  downloadSpeedBytesPerSec = $derived(
+    this.activeJobs.reduce(
+      (sum, job) => sum + (job.status === 'downloading' ? (job.progress?.speedBytesPerSec ?? 0) : 0),
+      0,
+    ),
   );
 
-  diskUsedPercent = $derived.by(() => {
-    const disk = this.config?.disk;
-    if (!disk || disk.totalBytes <= 0) return null;
-    const used = Math.max(0, disk.totalBytes - disk.freeBytes);
-    return Math.min(100, Math.round((used / disk.totalBytes) * 100));
-  });
-
-  diskTone = $derived<'success' | 'warning' | 'danger'>(
-    this.diskUsedPercent === null
-      ? 'success'
-      : this.diskUsedPercent >= 90
-        ? 'danger'
-        : this.diskUsedPercent >= 75
-          ? 'warning'
-          : 'success',
+  uploadSpeedBytesPerSec = $derived(
+    this.activeJobs.reduce(
+      (sum, job) => sum + (job.status === 'uploading' ? (job.progress?.speedBytesPerSec ?? 0) : 0),
+      0,
+    ),
   );
 
   hasMediaRefresh = $derived(
@@ -51,6 +45,8 @@ class TransferStore {
   private eventSource: EventSource | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private configTimer: ReturnType<typeof setInterval> | null = null;
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
+  private telemetryOpen = false;
 
   async refreshConfig() {
     try {
@@ -58,6 +54,31 @@ class TransferStore {
     } catch {
       // Keep last known config snapshot during transient network blips.
     }
+  }
+
+  async refreshStats() {
+    try {
+      this.stats = await fetchStats();
+    } catch {
+      // Keep last known stats snapshot during transient network blips.
+    }
+  }
+
+  setTelemetryOpen(open: boolean) {
+    this.telemetryOpen = open;
+    if (open) {
+      void this.refreshStats();
+    }
+    this.rescheduleStatsTimer();
+  }
+
+  private rescheduleStatsTimer() {
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
+    const intervalMs = this.telemetryOpen ? 5_000 : 30_000;
+    this.statsTimer = setInterval(() => void this.refreshStats(), intervalMs);
   }
 
   private setSnapshot(nextJobs: Job[]) {
@@ -74,6 +95,7 @@ class TransferStore {
 
     if (job.status === 'completed') {
       void this.refreshConfig();
+      void this.refreshStats();
     }
   }
 
@@ -96,7 +118,9 @@ class TransferStore {
 
   start(): () => void {
     void this.refreshConfig();
+    void this.refreshStats();
     this.configTimer = setInterval(() => void this.refreshConfig(), 30_000);
+    this.rescheduleStatsTimer();
 
     const es = new EventSource('/api/events');
     this.eventSource = es;
@@ -126,6 +150,10 @@ class TransferStore {
       if (this.configTimer) {
         clearInterval(this.configTimer);
         this.configTimer = null;
+      }
+      if (this.statsTimer) {
+        clearInterval(this.statsTimer);
+        this.statsTimer = null;
       }
     };
   }

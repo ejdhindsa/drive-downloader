@@ -4,6 +4,7 @@ import type {
   FoldersResponse,
   Job,
   RefreshResponse,
+  SystemStatsResponse,
 } from './types';
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -32,6 +33,10 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function fetchConfig(): Promise<AppConfigResponse> {
   return requestJson<AppConfigResponse>('/api/config');
+}
+
+export function fetchStats(): Promise<SystemStatsResponse> {
+  return requestJson<SystemStatsResponse>('/api/stats');
 }
 
 export function fetchFolders(path = '', refresh = false): Promise<FoldersResponse> {
