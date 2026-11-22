@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { AppConfig } from '../config';
-import type { CustomHeader, JobProgress } from '../types';
+import type { ConflictPolicy, CustomHeader, JobProgress } from '../types';
 import { attachAbortKill } from '../utils/process';
 import { sanitizeRelativePath } from '../utils/security';
 
@@ -224,12 +224,62 @@ function spawnRcloneWithStats(
   });
 }
 
+export function pickNonCollidingName(filename: string, existingNames: Set<string>): string {
+  if (!existingNames.has(filename)) return filename;
+  const ext = path.extname(filename);
+  const stem = ext ? filename.slice(0, -ext.length) : filename;
+  let counter = 1;
+  while (existingNames.has(`${stem} (${counter})${ext}`)) {
+    counter += 1;
+  }
+  return `${stem} (${counter})${ext}`;
+}
+
+async function listRemoteFileNames(config: AppConfig, remoteDir: string): Promise<Set<string>> {
+  try {
+    const { stdout } = await execFileAsync(
+      'rclone',
+      ['--config', config.rcloneConfig, 'lsf', '--files-only', '--format', 'p', remoteDir],
+      { timeout: 20_000, maxBuffer: 2 * 1024 * 1024 },
+    );
+    return new Set(
+      stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+export async function resolveLocalCollisions(
+  config: AppConfig,
+  localDir: string,
+  destRemoteDir: string,
+  onLog: (line: string) => void,
+): Promise<void> {
+  const existing = await listRemoteFileNames(config, destRemoteDir);
+  if (existing.size === 0) return;
+
+  const entries = await fs.readdir(localDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!existing.has(entry.name)) continue;
+    const nextName = pickNonCollidingName(entry.name, existing);
+    existing.add(nextName);
+    await fs.rename(path.join(localDir, entry.name), path.join(localDir, nextName));
+    onLog(`Renamed colliding file "${entry.name}" -> "${nextName}"`);
+  }
+}
+
 export async function runRcloneCopyUrl(
   config: AppConfig,
   opts: {
     url: string;
     destRemoteDir: string;
     customFilename?: string;
+    conflictPolicy?: ConflictPolicy;
     headers: CustomHeader[];
     proxyUrl?: string;
   },
@@ -239,16 +289,30 @@ export async function runRcloneCopyUrl(
     throw new Error('Custom HTTP headers are only supported in Staged mode');
   }
 
+  const policy = opts.conflictPolicy ?? 'skip';
+  let targetFilename = opts.customFilename;
+  if (policy === 'rename' && targetFilename) {
+    const existing = await listRemoteFileNames(config, opts.destRemoteDir);
+    const nextName = pickNonCollidingName(targetFilename, existing);
+    if (nextName !== targetFilename) {
+      callbacks.onLog(`Renamed colliding target "${targetFilename}" -> "${nextName}"`);
+      targetFilename = nextName;
+    }
+  }
+
   const args = ['--config', config.rcloneConfig, 'copyurl', opts.url];
 
-  if (opts.customFilename) {
-    args.push(`${opts.destRemoteDir}/${opts.customFilename}`);
+  if (targetFilename) {
+    args.push(`${opts.destRemoteDir}/${targetFilename}`);
   } else {
     args.push(`${opts.destRemoteDir}/`, '--auto-filename', '--header-filename');
   }
 
+  if (policy !== 'overwrite') {
+    args.push('--no-clobber');
+  }
+
   args.push(
-    '--no-clobber',
     '--drive-chunk-size',
     '64M',
     '--use-json-log',
@@ -302,16 +366,21 @@ export async function runRcloneMove(
   opts: {
     localDir: string;
     destRemoteDir: string;
+    conflictPolicy?: ConflictPolicy;
   },
   callbacks: RcloneTransferCallbacks,
 ): Promise<void> {
-  const args = [
-    '--config',
-    config.rcloneConfig,
-    'move',
-    opts.localDir,
-    opts.destRemoteDir,
-    '--ignore-existing',
+  const policy = opts.conflictPolicy ?? 'skip';
+  if (policy === 'rename') {
+    await resolveLocalCollisions(config, opts.localDir, opts.destRemoteDir, callbacks.onLog);
+  }
+
+  const args = ['--config', config.rcloneConfig, 'move', opts.localDir, opts.destRemoteDir];
+  if (policy !== 'overwrite') {
+    args.push('--ignore-existing');
+  }
+
+  args.push(
     '--delete-empty-src-dirs',
     '--no-traverse',
     '--transfers',
@@ -323,7 +392,7 @@ export async function runRcloneMove(
     '1s',
     '--stats-log-level',
     'NOTICE',
-  ];
+  );
 
   await spawnRcloneWithStats(args, callbacks);
   clearFolderCache();

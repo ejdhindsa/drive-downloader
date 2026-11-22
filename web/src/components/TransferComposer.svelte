@@ -1,8 +1,9 @@
 <script lang="ts">
   import { enqueueJobs } from '../api/client';
-  import type { CustomHeader, TransferMode } from '../api/types';
+  import type { ConflictPolicy, CustomHeader, TransferMode } from '../api/types';
   import { toasts } from '../stores/toasts.svelte';
   import { transferStore } from '../stores/transferStore.svelte';
+  import { looksLikeCurlCommand, parseCurlCommand } from '../utils/curlParser';
   import { suggestMediaDestination } from '../utils/mediaHints';
   import FolderBrowser from './FolderBrowser.svelte';
   import HeadersEditor from './HeadersEditor.svelte';
@@ -25,7 +26,9 @@
   let newSubfolder = $state('');
   let customFilename = $state('');
   let mode = $state<TransferMode>('staged');
+  let conflictPolicy = $state<ConflictPolicy>('skip');
   let autoExtract = $state(true);
+  let archivePassword = $state('');
   let autoRefreshJellyfin = $state(true);
   let headers = $state<CustomHeader[]>([]);
   let submitting = $state(false);
@@ -66,6 +69,55 @@
 
   let suggestion = $derived(suggestMediaDestination(parsedUrls, topFolders));
 
+  let multipartSummary = $derived.by(() => {
+    if (isDirect || !autoExtract || parsedUrls.length < 2) return null;
+    const groups = new Map<string, Set<number>>();
+    for (const raw of parsedUrls) {
+      let name = '';
+      try {
+        name = decodeURIComponent(new URL(raw).pathname.split('/').filter(Boolean).pop() ?? '');
+      } catch {
+        continue;
+      }
+      let key: string | null = null;
+      let order = 0;
+      const m1 = /^(.+)\.part(\d+)\.rar$/i.exec(name);
+      const m2 = /^(.+\.(?:7z|zip|rar))\.(\d{3,})$/i.exec(name);
+      const m3 = /^(.+)\.(rar|r\d{2,3})$/i.exec(name);
+      const m4 = /^(.+)\.(zip|z\d{2,3})$/i.exec(name);
+      if (m1) {
+        key = `rar-part:${m1[1].toLowerCase()}`;
+        order = Number.parseInt(m1[2], 10);
+      } else if (m2) {
+        key = `split-num:${m2[1].toLowerCase()}`;
+        order = Number.parseInt(m2[2], 10);
+      } else if (m3) {
+        key = `rar-legacy:${m3[1].toLowerCase()}`;
+        order = m3[2].toLowerCase() === 'rar' ? -1 : Number.parseInt(m3[2].slice(1), 10);
+      } else if (m4) {
+        key = `zip-split:${m4[1].toLowerCase()}`;
+        order = m4[2].toLowerCase() === 'zip' ? -1 : Number.parseInt(m4[2].slice(1), 10);
+      }
+      if (!key) continue;
+      let set = groups.get(key);
+      if (!set) {
+        set = new Set();
+        groups.set(key, set);
+      }
+      set.add(order);
+    }
+
+    let groupCount = 0;
+    let totalParts = 0;
+    for (const parts of groups.values()) {
+      if (parts.size >= 2) {
+        groupCount += 1;
+        totalParts += parts.size;
+      }
+    }
+    return groupCount > 0 ? { groupCount, totalParts } : null;
+  });
+
   let destinationPreview = $derived.by(() => {
     const root = transferStore.config?.rcloneRoot || 'gdrive:Media';
     const cleanNewSub = newSubfolder.trim().replace(/^\/+|\/+$/g, '');
@@ -87,6 +139,22 @@
     return Array.from(new Set(matches.map((u) => u.replace(/[),.;]+$/, ''))));
   }
 
+  function applyCurlImport(rawText: string): boolean {
+    const parsed = parseCurlCommand(rawText);
+    if (!parsed) return false;
+    rawUrls = parsed.url;
+    if (parsed.headers.length > 0) {
+      headers = parsed.headers;
+      mode = 'staged';
+      showAdvanced = true;
+    }
+    toasts.push(
+      'success',
+      `Imported cURL (${parsed.headers.length} ${parsed.headers.length === 1 ? 'header' : 'headers'}).`,
+    );
+    return true;
+  }
+
   async function handlePasteClipboard() {
     try {
       const clip = (await navigator.clipboard.readText()).trim();
@@ -94,12 +162,21 @@
         toasts.push('info', 'Clipboard is empty.');
         return;
       }
+      if (applyCurlImport(clip)) return;
       const extracted = extractUrlsFromText(clip);
       const additions = extracted.length > 0 ? extracted : [clip];
       const merged = Array.from(new Set([...parsedUrls, ...additions]));
       rawUrls = merged.join('\n');
     } catch {
       toasts.push('danger', 'Clipboard permission denied—paste with Ctrl+V.');
+    }
+  }
+
+  function handleTextareaPaste(event: ClipboardEvent) {
+    const pasted = event.clipboardData?.getData('text/plain') ?? '';
+    if (looksLikeCurlCommand(pasted)) {
+      event.preventDefault();
+      applyCurlImport(pasted);
     }
   }
 
@@ -175,13 +252,16 @@
         newSubfolder: newSubfolder.trim(),
         customFilename: isBatch ? '' : customFilename.trim(),
         mode,
+        conflictPolicy,
         autoExtract: isDirect ? false : autoExtract,
+        archivePassword: !isDirect && autoExtract && archivePassword ? archivePassword : undefined,
         autoRefreshJellyfin: transferStore.hasMediaRefresh ? autoRefreshJellyfin : false,
         headers: activeHeaders,
       });
 
       rawUrls = '';
       customFilename = '';
+      archivePassword = '';
       toasts.push(
         'success',
         `Queued ${jobs.length} ${jobs.length === 1 ? 'transfer' : 'transfers'}.`,
@@ -262,8 +342,9 @@
       <textarea
         id="urls-input"
         bind:value={rawUrls}
+        onpaste={handleTextareaPaste}
         onkeydown={handleKeydown}
-        placeholder="https://example.com/Movie.2025.2160p.mkv&#10;https://example.com/SeasonPack.zip"
+        placeholder="Paste URLs (one per line) or a DevTools 'Copy as cURL' command"
         rows="4"
         required
       ></textarea>
@@ -274,6 +355,17 @@
         </div>
       {/if}
     </div>
+
+    {#if multipartSummary}
+      <div class="multipart-banner">
+        <span class="multipart-tag">Multi-part</span>
+        <span class="multipart-text">
+          {multipartSummary.totalParts} archive parts detected — will download & extract together as
+          {multipartSummary.groupCount}
+          {multipartSummary.groupCount === 1 ? 'transfer' : 'transfers'}
+        </span>
+      </div>
+    {/if}
 
     {#if suggestion}
       <button type="button" class="hint-banner" onclick={applySuggestion}>
@@ -318,6 +410,16 @@
         {#if activeHeaderCount > 0}
           <button type="button" class="summary-chip accent" onclick={() => (showAdvanced = true)}>
             {activeHeaderCount} {activeHeaderCount === 1 ? 'header' : 'headers'}
+          </button>
+        {/if}
+        {#if conflictPolicy !== 'skip'}
+          <button type="button" class="summary-chip accent" onclick={() => (showAdvanced = true)}>
+            Conflict: {conflictPolicy}
+          </button>
+        {/if}
+        {#if archivePassword}
+          <button type="button" class="summary-chip accent" onclick={() => (showAdvanced = true)}>
+            Password set
           </button>
         {/if}
       </div>
@@ -378,6 +480,26 @@
             </div>
           </div>
 
+          <div class="field">
+            <span class="field-label">If File Already Exists on Drive</span>
+            <div class="policy-row">
+              {#each [
+                { id: 'skip', label: 'Skip & Warn' },
+                { id: 'rename', label: 'Auto-rename' },
+                { id: 'overwrite', label: 'Overwrite' },
+              ] as opt (opt.id)}
+                <button
+                  type="button"
+                  class="policy-btn"
+                  class:selected={conflictPolicy === opt.id}
+                  onclick={() => (conflictPolicy = opt.id as ConflictPolicy)}
+                >
+                  {opt.label}
+                </button>
+              {/each}
+            </div>
+          </div>
+
           <div class="toggles">
             <label class="switch-row" class:disabled={isDirect}>
               <span class="switch-label">
@@ -389,6 +511,19 @@
                 <span class="pill-track"><span class="pill-knob"></span></span>
               </span>
             </label>
+
+            {#if !isDirect && autoExtract}
+              <div class="field">
+                <label for="archive-password">Archive Password (optional, never saved)</label>
+                <input
+                  id="archive-password"
+                  type="password"
+                  autocomplete="off"
+                  bind:value={archivePassword}
+                  placeholder="Leave empty for unencrypted archives"
+                />
+              </div>
+            {/if}
 
             {#if transferStore.hasMediaRefresh}
               <label class="switch-row">
@@ -642,6 +777,34 @@
     pointer-events: none;
   }
 
+  .multipart-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--uw-space-2);
+    padding: var(--uw-space-2) var(--uw-space-3);
+    border-radius: var(--uw-radius-md);
+    border: 1px solid var(--uw-warning-border);
+    background: var(--uw-warning-bg);
+    color: var(--uw-warning-fg);
+    font-size: var(--uw-font-size-xs);
+    animation: panelIn var(--uw-duration-normal) var(--uw-easing-emphasized);
+  }
+
+  .multipart-tag {
+    font-size: 0.68rem;
+    font-weight: var(--uw-font-weight-bold);
+    text-transform: uppercase;
+    letter-spacing: var(--uw-letter-spacing-wider);
+    padding: 2px var(--uw-space-2);
+    border-radius: var(--uw-radius-full);
+    background: color-mix(in oklch, var(--uw-warning-solid) 20%, transparent);
+    flex-shrink: 0;
+  }
+
+  .multipart-text {
+    line-height: var(--uw-line-height-snug);
+  }
+
   .hint-banner {
     display: flex;
     align-items: center;
@@ -703,7 +866,8 @@
     }
   }
 
-  input[type='text'] {
+  input[type='text'],
+  input[type='password'] {
     width: 100%;
     background: var(--uw-bg-subtle);
     color: var(--uw-fg-default);
@@ -717,10 +881,44 @@
       box-shadow var(--uw-duration-fast) var(--uw-easing-standard);
   }
 
-  input[type='text']:focus {
+  input[type='text']:focus,
+  input[type='password']:focus {
     outline: none;
     border-color: var(--uw-focus-ring);
     box-shadow: 0 0 0 3px color-mix(in oklch, var(--uw-brand-solid) 18%, transparent);
+  }
+
+  .policy-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--uw-space-2);
+  }
+
+  .policy-btn {
+    border: 1px solid var(--uw-border-default);
+    background: var(--uw-bg-subtle);
+    color: var(--uw-fg-muted);
+    border-radius: var(--uw-radius-md);
+    padding: var(--uw-space-2);
+    font-family: var(--uw-font-sans);
+    font-size: var(--uw-font-size-xs);
+    font-weight: var(--uw-font-weight-semibold);
+    cursor: pointer;
+    transition:
+      background-color var(--uw-duration-fast) var(--uw-easing-standard),
+      border-color var(--uw-duration-fast) var(--uw-easing-standard),
+      color var(--uw-duration-fast) var(--uw-easing-standard);
+  }
+
+  .policy-btn:hover {
+    color: var(--uw-fg-default);
+    border-color: var(--uw-border-strong);
+  }
+
+  .policy-btn.selected {
+    background: var(--uw-brand-bg);
+    border-color: var(--uw-brand-solid);
+    color: var(--uw-brand-fg);
   }
 
   input:disabled {

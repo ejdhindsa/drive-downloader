@@ -23,13 +23,165 @@ export interface ArchiveExtractionLimits {
   freeDiskBytes?: number;
   minFreeDiskBytes?: number;
   maxCompressionRatio?: number;
+  totalArchiveSizeBytes?: number;
+  isMultiPart?: boolean;
+  password?: string;
+}
+
+export interface MultipartGroup {
+  urls: string[];
+  groupName?: string;
+}
+
+interface ParsedMultipartName {
+  groupKey: string;
+  baseName: string;
+  partOrder: number;
+}
+
+export function sanitizeArchivePassword(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  if (/[\r\n\0]/.test(raw) || raw.length > 512) {
+    throw new Error('Archive password contains invalid control characters or exceeds 512 characters');
+  }
+  return raw;
+}
+
+export function parseMultipartFilename(filename: string): ParsedMultipartName | null {
+  const partRar = /^(.+)\.part(\d+)\.rar$/i.exec(filename);
+  if (partRar) {
+    return {
+      groupKey: `rar-part:${partRar[1].toLowerCase()}`,
+      baseName: `${partRar[1]}.rar`,
+      partOrder: Number.parseInt(partRar[2], 10),
+    };
+  }
+
+  const numbered = /^(.+\.(?:7z|zip|rar))\.(\d{3,})$/i.exec(filename);
+  if (numbered) {
+    return {
+      groupKey: `split-num:${numbered[1].toLowerCase()}`,
+      baseName: numbered[1],
+      partOrder: Number.parseInt(numbered[2], 10),
+    };
+  }
+
+  const legacyRar = /^(.+)\.(rar|r\d{2,3})$/i.exec(filename);
+  if (legacyRar) {
+    const ext = legacyRar[2].toLowerCase();
+    return {
+      groupKey: `rar-legacy:${legacyRar[1].toLowerCase()}`,
+      baseName: `${legacyRar[1]}.rar`,
+      partOrder: ext === 'rar' ? -1 : Number.parseInt(ext.slice(1), 10),
+    };
+  }
+
+  const splitZip = /^(.+)\.(zip|z\d{2,3})$/i.exec(filename);
+  if (splitZip) {
+    const ext = splitZip[2].toLowerCase();
+    return {
+      groupKey: `zip-split:${splitZip[1].toLowerCase()}`,
+      baseName: `${splitZip[1]}.zip`,
+      partOrder: ext === 'zip' ? -1 : Number.parseInt(ext.slice(1), 10),
+    };
+  }
+
+  return null;
+}
+
+function filenameFromUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    const segment = parsed.pathname.split('/').filter(Boolean).pop();
+    return segment ? decodeURIComponent(segment) : '';
+  } catch {
+    return '';
+  }
+}
+
+export function groupMultipartUrls(urls: string[]): MultipartGroup[] {
+  const buckets = new Map<
+    string,
+    { baseName: string; firstIndex: number; items: Array<{ url: string; partOrder: number }> }
+  >();
+  const urlKeys: Array<string | null> = [];
+
+  for (let i = 0; i < urls.length; i += 1) {
+    const url = urls[i];
+    const parsed = parseMultipartFilename(filenameFromUrl(url));
+    if (!parsed) {
+      urlKeys.push(null);
+      continue;
+    }
+    urlKeys.push(parsed.groupKey);
+    const existing = buckets.get(parsed.groupKey);
+    if (existing) {
+      existing.items.push({ url, partOrder: parsed.partOrder });
+    } else {
+      buckets.set(parsed.groupKey, {
+        baseName: parsed.baseName,
+        firstIndex: i,
+        items: [{ url, partOrder: parsed.partOrder }],
+      });
+    }
+  }
+
+  const emittedGroups = new Set<string>();
+  const result: MultipartGroup[] = [];
+
+  for (let i = 0; i < urls.length; i += 1) {
+    const key = urlKeys[i];
+    if (!key) {
+      result.push({ urls: [urls[i]] });
+      continue;
+    }
+
+    const bucket = buckets.get(key)!;
+    const distinctParts = new Set(bucket.items.map((item) => item.partOrder));
+    if (bucket.items.length < 2 || distinctParts.size < 2) {
+      result.push({ urls: [urls[i]] });
+      continue;
+    }
+
+    if (emittedGroups.has(key)) continue;
+    emittedGroups.add(key);
+
+    const ordered = bucket.items
+      .slice()
+      .sort((a, b) => a.partOrder - b.partOrder)
+      .map((item) => item.url);
+    result.push({ urls: ordered, groupName: bucket.baseName });
+  }
+
+  return result;
+}
+
+export function pickEntryArchiveFile(filenames: string[]): string | null {
+  if (filenames.length === 0) return null;
+  if (filenames.length === 1) {
+    return detectArchiveFormat(filenames[0]) ? filenames[0] : null;
+  }
+
+  const parsedCandidates = filenames
+    .map((name) => ({ name, parsed: parseMultipartFilename(name), format: detectArchiveFormat(name) }))
+    .filter((entry) => entry.format !== null);
+
+  if (parsedCandidates.length === 0) return null;
+
+  parsedCandidates.sort((a, b) => {
+    const orderA = a.parsed ? a.parsed.partOrder : Number.MAX_SAFE_INTEGER;
+    const orderB = b.parsed ? b.parsed.partOrder : Number.MAX_SAFE_INTEGER;
+    return orderA - orderB;
+  });
+
+  return parsedCandidates[0].name;
 }
 
 export function detectArchiveFormat(filename: string): ArchiveFormat | null {
   const lower = filename.toLowerCase();
-  if (lower.endsWith('.zip')) return 'zip';
-  if (lower.endsWith('.7z')) return '7z';
-  if (lower.endsWith('.rar')) return 'rar';
+  if (lower.endsWith('.zip') || /\.zip\.0*1$/.test(lower)) return 'zip';
+  if (lower.endsWith('.7z') || /\.7z\.0*1$/.test(lower)) return '7z';
+  if (lower.endsWith('.rar') || /\.rar\.0*1$/.test(lower)) return 'rar';
   if (
     lower.endsWith('.tar') ||
     lower.endsWith('.tar.gz') ||
@@ -314,7 +466,10 @@ async function inspectArchiveEntries(
   archivePath: string,
   format: ArchiveFormat,
   signal: AbortSignal,
+  opts: { password?: string; force7z?: boolean } = {},
 ): Promise<ArchiveEntryInfo[]> {
+  const pwArgs = opts.password ? [`-p${opts.password}`] : [];
+
   if (format === 'tar') {
     const output = await runCommandCapture('tar', ['-tvf', archivePath], signal);
     return parseTarListing(output);
@@ -323,29 +478,31 @@ async function inspectArchiveEntries(
   if (format === 'zip') {
     try {
       const bin7z = await resolve7zBinary();
-      const output = await runCommandCapture(bin7z, ['l', '-slt', archivePath], signal);
+      const output = await runCommandCapture(bin7z, ['l', '-slt', ...pwArgs, archivePath], signal);
       return parse7zListing(output);
     } catch (err) {
-      if (signal.aborted) throw err;
+      if (signal.aborted || opts.password || opts.force7z) throw err;
       const output = await runCommandCapture('unzip', ['-l', archivePath], signal);
       return parseUnzipListing(output);
     }
   }
 
   if (format === 'rar') {
-    try {
-      const output = await runCommandCapture('bsdtar', ['-tvf', archivePath], signal);
-      return parseTarListing(output);
-    } catch (err) {
-      if (signal.aborted) throw err;
-      const bin7z = await resolve7zBinary();
-      const output = await runCommandCapture(bin7z, ['l', '-slt', archivePath], signal);
-      return parse7zListing(output);
+    if (!opts.password && !opts.force7z) {
+      try {
+        const output = await runCommandCapture('bsdtar', ['-tvf', archivePath], signal);
+        return parseTarListing(output);
+      } catch (err) {
+        if (signal.aborted) throw err;
+      }
     }
+    const bin7z = await resolve7zBinary();
+    const output = await runCommandCapture(bin7z, ['l', '-slt', ...pwArgs, archivePath], signal);
+    return parse7zListing(output);
   }
 
   const bin7z = await resolve7zBinary();
-  const output = await runCommandCapture(bin7z, ['l', '-slt', archivePath], signal);
+  const output = await runCommandCapture(bin7z, ['l', '-slt', ...pwArgs, archivePath], signal);
   return parse7zListing(output);
 }
 
@@ -403,11 +560,13 @@ export async function extractArchive(
     throw new Error(`Unsupported archive format: ${path.basename(archivePath)}`);
   }
 
+  const password = sanitizeArchivePassword(limits.password);
+  const force7z = Boolean(limits.isMultiPart || /\.(?:7z|zip|rar)\.0*1$/i.test(archivePath));
   const stat = await fs.stat(archivePath);
-  const entries = await inspectArchiveEntries(archivePath, format, signal);
+  const entries = await inspectArchiveEntries(archivePath, format, signal, { password, force7z });
   const preflight = validateArchivePreflight({
     entries,
-    archiveSizeBytes: stat.size,
+    archiveSizeBytes: limits.totalArchiveSizeBytes ?? stat.size,
     limits,
   });
   onLog(
@@ -415,22 +574,34 @@ export async function extractArchive(
   );
 
   await fs.mkdir(destDir, { recursive: true });
+  const pwArgs = password ? [`-p${password}`] : [];
 
   if (format === 'zip') {
-    await runCommand('unzip', ['-q', '-o', archivePath, '-d', destDir], signal, onLog);
+    if (password || force7z) {
+      // 7zz handles encrypted zips and split .zip/.z01/.zip.001 volumes.
+      const bin7z = await resolve7zBinary();
+      await runCommand(bin7z, ['x', '-y', ...pwArgs, `-o${destDir}`, archivePath], signal, onLog);
+    } else {
+      await runCommand('unzip', ['-q', '-o', archivePath, '-d', destDir], signal, onLog);
+    }
   } else if (format === 'tar') {
     await runCommand('tar', ['-xf', archivePath, '-C', destDir], signal, onLog);
   } else if (format === '7z') {
     const bin7z = await resolve7zBinary();
-    await runCommand(bin7z, ['x', '-y', `-o${destDir}`, archivePath], signal, onLog);
+    await runCommand(bin7z, ['x', '-y', ...pwArgs, `-o${destDir}`, archivePath], signal, onLog);
   } else if (format === 'rar') {
-    try {
-      await runCommand('bsdtar', ['-xf', archivePath, '-C', destDir], signal, onLog);
-    } catch (err) {
-      if (signal.aborted) throw err;
-      onLog('bsdtar failed on .rar, trying 7z...');
+    if (password || force7z) {
       const bin7z = await resolve7zBinary();
-      await runCommand(bin7z, ['x', '-y', `-o${destDir}`, archivePath], signal, onLog);
+      await runCommand(bin7z, ['x', '-y', ...pwArgs, `-o${destDir}`, archivePath], signal, onLog);
+    } else {
+      try {
+        await runCommand('bsdtar', ['-xf', archivePath, '-C', destDir], signal, onLog);
+      } catch (err) {
+        if (signal.aborted) throw err;
+        onLog('bsdtar failed on .rar, trying 7z...');
+        const bin7z = await resolve7zBinary();
+        await runCommand(bin7z, ['x', '-y', `-o${destDir}`, archivePath], signal, onLog);
+      }
     }
   }
 

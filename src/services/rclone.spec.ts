@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config';
 import { buildApp } from '../server';
 import { JobQueueManager } from './queue';
-import { buildCreateDirectoryTarget } from './rclone';
+import { buildCreateDirectoryTarget, pickNonCollidingName } from './rclone';
 import { JobStore } from './store';
 
 const tempDirs: string[] = [];
@@ -35,6 +35,13 @@ describe('rclone folder creation scoping', () => {
     expect(() => buildCreateDirectoryTarget('gdrive:Media', 'other:Secret')).toThrow(/Invalid path segment/);
     expect(() => buildCreateDirectoryTarget('gdrive:Media', '--config=/etc/passwd')).toThrow(/Invalid path segment/);
     expect(() => buildCreateDirectoryTarget('gdrive:Media', 'Movies\\Sub')).toThrow(/Invalid path segment/);
+  });
+
+  it('picks non-colliding filenames cleanly when conflict policy is rename', () => {
+    const existing = new Set(['Movie.mkv', 'Movie (1).mkv', 'README']);
+    expect(pickNonCollidingName('Other.mkv', existing)).toBe('Other.mkv');
+    expect(pickNonCollidingName('Movie.mkv', existing)).toBe('Movie (2).mkv');
+    expect(pickNonCollidingName('README', existing)).toBe('README (1)');
   });
 
   it('POST /api/folders rejects empty, traversal, and cross-site CSRF requests', async () => {

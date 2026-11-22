@@ -34,7 +34,7 @@
   let fileKind = $derived.by<'video' | 'archive' | 'audio' | 'book' | 'file'>(() => {
     const lower = title.toLowerCase();
     if (/\.(mkv|mp4|avi|mov|webm|m4v)$/.test(lower)) return 'video';
-    if (/\.(zip|7z|rar|tar|tgz|tar\.gz|tar\.bz2|tar\.xz|txz)$/.test(lower)) return 'archive';
+    if (/\.(zip|7z|rar|tar|tgz|tar\.gz|tar\.bz2|tar\.xz|txz)(\.\d{3,})?$/.test(lower)) return 'archive';
     if (/\.(mp3|flac|m4a|m4b|ogg|wav|opus)$/.test(lower)) return 'audio';
     if (/\.(epub|pdf|mobi|azw3|cbz|cbr)$/.test(lower)) return 'book';
     return 'file';
@@ -173,6 +173,9 @@
     <div class="badges">
       {#if job.status === 'queued' && job.priority}
         <span class="badge priority-badge">Priority</span>
+      {/if}
+      {#if job.partUrls && job.partUrls.length > 1}
+        <span class="badge parts-badge">{job.partUrls.length} parts</span>
       {/if}
       <span class="badge mode-badge">{job.mode === 'direct' ? 'Direct' : 'Staged 16x'}</span>
       <span class="badge status-badge badge-{job.status}">{job.status}</span>
@@ -480,6 +483,12 @@
     background: var(--uw-info-bg);
     border-color: var(--uw-info-border);
     color: var(--uw-info-fg);
+  }
+
+  .parts-badge {
+    background: var(--uw-warning-bg);
+    border-color: var(--uw-warning-border);
+    color: var(--uw-warning-fg);
   }
 
   .badge-downloading {
