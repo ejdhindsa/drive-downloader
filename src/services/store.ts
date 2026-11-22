@@ -15,13 +15,14 @@ export function isActiveOrQueuedStatus(status: Job['status']): boolean {
   );
 }
 
-/**
- * Preserves all active/queued jobs untouched and caps finished job history to `maxFinished`.
- */
+export function isUnfinishedStatus(status: Job['status']): boolean {
+  return isActiveOrQueuedStatus(status) || status === 'paused';
+}
+
 export function trimJobHistory(jobs: Job[], maxFinished = MAX_FINISHED_JOBS): Job[] {
   let finishedCount = 0;
   return jobs.filter((job) => {
-    if (isActiveOrQueuedStatus(job.status)) {
+    if (isUnfinishedStatus(job.status)) {
       return true;
     }
     finishedCount += 1;

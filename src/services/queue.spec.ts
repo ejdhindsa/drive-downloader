@@ -505,4 +505,145 @@ describe('JobQueueManager concurrency, cancellation, retry, and redaction', () =
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('pauses and resumes staged downloads while preserving partial staging dir', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'drive-dl-pause-'));
+    try {
+      const config = makeTestConfig(tmpDir, 1);
+      const store = new JobStore(config.dataDir);
+      const queue = new JobQueueManager(config, store);
+      await queue.init();
+
+      const seenDirs: string[] = [];
+      const firstStarted = deferred<void>();
+      const secondStarted = deferred<void>();
+      const finishSecond = deferred<void>();
+      let attempt = 0;
+
+      const internals = queue as unknown as {
+        executeStagedTransfer: (job: Job, dir: string, signal: AbortSignal) => Promise<void>;
+      };
+      internals.executeStagedTransfer = async (_job, dir, signal) => {
+        attempt += 1;
+        seenDirs.push(dir);
+        await fs.mkdir(dir, { recursive: true });
+        if (attempt === 1) {
+          await fs.writeFile(path.join(dir, 'movie.mkv.aria2'), 'partial-state');
+          firstStarted.resolve();
+          await new Promise<void>((_, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('Cancelled')), { once: true });
+          });
+        } else {
+          secondStarted.resolve();
+          await finishSecond.promise;
+        }
+      };
+
+      const [job] = await queue.enqueueJobs({
+        urls: ['https://93.184.216.34/pausable.mkv'],
+        folder: 'Movies',
+        mode: 'staged',
+        autoExtract: false,
+        autoRefreshJellyfin: false,
+      });
+
+      await firstStarted.promise;
+      await queue.pauseJob(job.id);
+
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (queue.getJob(job.id)?.status === 'paused') resolve();
+          else setTimeout(check, 5);
+        };
+        check();
+      });
+
+      expect(await fs.readFile(path.join(seenDirs[0], 'movie.mkv.aria2'), 'utf8')).toBe('partial-state');
+      expect(await queue.clearFinished()).toBe(0);
+
+      await queue.resumeJob(job.id);
+      await secondStarted.promise;
+      expect(seenDirs[1]).toBe(seenDirs[0]);
+
+      finishSecond.resolve();
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (queue.getJob(job.id)?.status === 'completed') resolve();
+          else setTimeout(check, 5);
+        };
+        check();
+      });
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('supports prioritizeJob, retryAllFailed, and cancelAllActive', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'drive-dl-bulk-'));
+    try {
+      const config = makeTestConfig(tmpDir, 1);
+      const store = new JobStore(config.dataDir);
+      const queue = new JobQueueManager(config, store);
+      await queue.init();
+
+      const started: string[] = [];
+      const gates = new Map<string, ReturnType<typeof deferred<void>>>();
+      const internals = queue as unknown as {
+        executeStagedTransfer: (job: Job, dir: string, signal: AbortSignal) => Promise<void>;
+      };
+      internals.executeStagedTransfer = async (job, _dir, signal) => {
+        started.push(job.id);
+        const gate = deferred<void>();
+        gates.set(job.id, gate);
+        await new Promise<void>((resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('Cancelled')), { once: true });
+          gate.promise.then(resolve, reject);
+        });
+      };
+
+      const created = await queue.enqueueJobs({
+        urls: [
+          'https://93.184.216.34/first.mkv',
+          'https://93.184.216.34/second.mkv',
+          'https://93.184.216.34/third.mkv',
+        ],
+        folder: 'Movies',
+        mode: 'staged',
+        autoExtract: false,
+        autoRefreshJellyfin: false,
+      });
+
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (started.length >= 1) resolve();
+          else setTimeout(check, 5);
+        };
+        check();
+      });
+
+      await queue.prioritizeJob(created[2].id);
+      gates.get(created[0].id)!.reject(new Error('Boom'));
+
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (started.length >= 2) resolve();
+          else setTimeout(check, 5);
+        };
+        check();
+      });
+
+      // Third job jumped ahead of second due to prioritizeJob.
+      expect(started[1]).toBe(created[2].id);
+
+      const cancelledCount = await queue.cancelAllActive();
+      expect(cancelledCount).toBe(2);
+
+      const retriedCount = await queue.retryAllFailed();
+      expect(retriedCount).toBe(1);
+
+      await queue.shutdown();
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

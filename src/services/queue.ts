@@ -29,7 +29,7 @@ import { refreshMediaTargets } from './jellyfin';
 import { assertNoSkippedFiles, runRcloneCopyUrl, runRcloneMove } from './rclone';
 import {
   type JobStore,
-  isActiveOrQueuedStatus,
+  isUnfinishedStatus,
   trimJobHistory,
   verifyWritableDirectory,
 } from './store';
@@ -168,6 +168,9 @@ export class JobQueueManager extends EventEmitter {
   private readonly lastEmitAt = new Map<string, number>();
   // Keep raw sensitive headers in memory only; job.headers always holds redacted copies.
   private readonly liveHeaders = new Map<string, CustomHeader[]>();
+  private readonly pausedIds = new Set<string>();
+  private readonly resumeStagingDirs = new Map<string, string>();
+  private prioritySeq = 1;
   private shuttingDown = false;
 
   constructor(config: AppConfig, store: JobStore) {
@@ -283,12 +286,16 @@ export class JobQueueManager extends EventEmitter {
     const job = this.findJobInternal(id);
     if (!job) throw new Error('Job not found');
 
-    if (job.status === 'queued') {
+    if (job.status === 'queued' || job.status === 'paused') {
       job.status = 'cancelled';
       job.phaseLabel = 'Cancelled';
+      job.priority = undefined;
       job.finishedAt = new Date().toISOString();
       this.liveHeaders.delete(id);
-      this.appendLog(job, 'Cancelled while queued');
+      this.pausedIds.delete(id);
+      this.resumeStagingDirs.delete(id);
+      await this.removeJobStagingDirs(id);
+      this.appendLog(job, 'Cancelled before completion');
       await this.store.save(this.jobs);
       this.emitJob(job, true);
       return redactJobForOutput(job);
@@ -296,6 +303,7 @@ export class JobQueueManager extends EventEmitter {
 
     const controller = this.activeControllers.get(id);
     if (controller) {
+      this.pausedIds.delete(id);
       this.appendLog(job, 'Cancellation requested...');
       controller.abort();
       this.emitJob(job, true);
@@ -303,6 +311,134 @@ export class JobQueueManager extends EventEmitter {
     }
 
     throw new Error(`Cannot cancel job in state "${job.status}"`);
+  }
+
+  async pauseJob(id: string): Promise<Job> {
+    const job = this.findJobInternal(id);
+    if (!job) throw new Error('Job not found');
+
+    if (job.status === 'queued') {
+      job.status = 'paused';
+      job.phaseLabel = 'Paused';
+      this.appendLog(job, 'Paused while queued');
+      await this.store.save(this.jobs);
+      this.emitJob(job, true);
+      return redactJobForOutput(job);
+    }
+
+    const controller = this.activeControllers.get(id);
+    if (controller && job.mode === 'staged' && job.status === 'downloading') {
+      this.pausedIds.add(id);
+      this.appendLog(job, 'Pause requested...');
+      controller.abort();
+      this.emitJob(job, true);
+      return redactJobForOutput(job);
+    }
+
+    throw new Error(`Cannot pause job in state "${job.status}" (${job.mode} mode)`);
+  }
+
+  async resumeJob(id: string): Promise<Job> {
+    const job = this.findJobInternal(id);
+    if (!job) throw new Error('Job not found');
+    if (this.activeControllers.has(id)) {
+      throw new Error('Job is still pausing');
+    }
+    if (job.status !== 'paused') {
+      throw new Error('Only paused jobs can be resumed');
+    }
+
+    await validatePublicUrl(job.url);
+
+    job.status = 'queued';
+    job.phaseLabel = 'Queued';
+    this.appendLog(job, 'Resuming job...');
+    await this.store.save(this.jobs);
+    this.emitJob(job, true);
+    this.pumpQueue();
+
+    return redactJobForOutput(job);
+  }
+
+  async prioritizeJob(id: string): Promise<Job> {
+    const job = this.findJobInternal(id);
+    if (!job) throw new Error('Job not found');
+    if (job.status !== 'queued') {
+      throw new Error('Only queued jobs can be prioritized');
+    }
+
+    job.priority = this.prioritySeq++;
+    this.appendLog(job, 'Moved to front of queue');
+    await this.store.save(this.jobs);
+    this.emit('jobs-changed', this.listJobs());
+    return redactJobForOutput(job);
+  }
+
+  async retryAllFailed(): Promise<number> {
+    const targets = this.jobs.filter(
+      (j) => j.status === 'failed' && !this.activeControllers.has(j.id),
+    );
+    let retried = 0;
+
+    for (const job of targets) {
+      try {
+        await validatePublicUrl(job.url);
+      } catch {
+        continue;
+      }
+      job.status = 'queued';
+      job.phaseLabel = 'Queued';
+      job.error = undefined;
+      job.startedAt = undefined;
+      job.finishedAt = undefined;
+      job.progress = defaultProgress();
+      this.appendLog(job, 'Retrying job (bulk retry)...');
+      retried += 1;
+    }
+
+    if (retried > 0) {
+      await this.store.save(this.jobs);
+      this.emit('jobs-changed', this.listJobs());
+      this.pumpQueue();
+    }
+
+    return retried;
+  }
+
+  async cancelAllActive(): Promise<number> {
+    let cancelled = 0;
+    const now = new Date().toISOString();
+
+    for (const job of this.jobs) {
+      if (job.status === 'queued' || job.status === 'paused') {
+        job.status = 'cancelled';
+        job.phaseLabel = 'Cancelled';
+        job.priority = undefined;
+        job.finishedAt = now;
+        this.liveHeaders.delete(job.id);
+        this.pausedIds.delete(job.id);
+        this.resumeStagingDirs.delete(job.id);
+        await this.removeJobStagingDirs(job.id);
+        this.appendLog(job, 'Cancelled (bulk cancel)');
+        cancelled += 1;
+        continue;
+      }
+
+      const controller = this.activeControllers.get(job.id);
+      if (controller) {
+        this.pausedIds.delete(job.id);
+        this.appendLog(job, 'Cancellation requested (bulk cancel)...');
+        controller.abort();
+        cancelled += 1;
+      }
+    }
+
+    if (cancelled > 0) {
+      await this.store.save(this.jobs);
+      this.emit('jobs-changed', this.listJobs());
+    }
+
+    return cancelled;
   }
 
   async retryJob(id: string): Promise<Job> {
@@ -343,23 +479,25 @@ export class JobQueueManager extends EventEmitter {
   async deleteJob(id: string): Promise<void> {
     const job = this.findJobInternal(id);
     if (!job) throw new Error('Job not found');
-    if (this.activeControllers.has(id) || job.status === 'queued') {
-      throw new Error('Cancel the active or queued job before deleting it');
+    if (this.activeControllers.has(id) || job.status === 'queued' || job.status === 'paused') {
+      throw new Error('Cancel the active, paused, or queued job before deleting it');
     }
     this.jobs = this.jobs.filter((j) => j.id !== id);
     this.liveHeaders.delete(id);
+    this.resumeStagingDirs.delete(id);
     await this.removeJobStagingDirs(id);
     await this.store.save(this.jobs);
     this.emit('jobs-changed', this.listJobs());
   }
 
   async clearFinished(): Promise<number> {
-    const keepJob = (j: Job) => isActiveOrQueuedStatus(j.status) || this.activeControllers.has(j.id);
+    const keepJob = (j: Job) => isUnfinishedStatus(j.status) || this.activeControllers.has(j.id);
     const removedJobs = this.jobs.filter((j) => !keepJob(j));
     if (removedJobs.length > 0) {
       this.jobs = this.jobs.filter(keepJob);
       for (const removed of removedJobs) {
         this.liveHeaders.delete(removed.id);
+        this.resumeStagingDirs.delete(removed.id);
       }
       await Promise.all(removedJobs.map((j) => this.removeJobStagingDirs(j.id)));
       await this.store.save(this.jobs);
@@ -391,13 +529,16 @@ export class JobQueueManager extends EventEmitter {
   private pumpQueue(): void {
     if (this.shuttingDown) return;
     while (this.activeControllers.size < this.config.maxConcurrentJobs) {
-      // Pick oldest queued job (FIFO) that has not already been claimed.
-      const next = [...this.jobs]
+      // Pick highest-priority queued job first, breaking ties FIFO (oldest queued first).
+      const queued = [...this.jobs]
         .reverse()
-        .find((j) => j.status === 'queued' && !this.activeControllers.has(j.id));
+        .filter((j) => j.status === 'queued' && !this.activeControllers.has(j.id));
+      queued.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+      const next = queued[0];
       if (!next) break;
       const controller = new AbortController();
       this.activeControllers.set(next.id, controller);
+      next.priority = undefined;
       next.status = next.mode === 'direct' ? 'uploading' : 'downloading';
       next.phaseLabel = 'Starting';
       this.emitJob(next, true);
@@ -433,10 +574,13 @@ export class JobQueueManager extends EventEmitter {
     this.activeControllers.set(job.id, activeController);
     const runId = crypto.randomUUID().slice(0, 8);
     const jobStagingRoot = path.join(this.config.stagingDir, job.id);
-    const jobStagingDir = path.join(jobStagingRoot, runId);
+    const resumedDir = this.resumeStagingDirs.get(job.id);
+    this.resumeStagingDirs.delete(job.id);
+    const jobStagingDir = resumedDir ?? path.join(jobStagingRoot, runId);
 
     let outcome:
       | { status: 'completed' }
+      | { status: 'paused' }
       | { status: 'cancelled' }
       | { status: 'failed'; error: string } = { status: 'failed', error: 'Transfer failed' };
 
@@ -444,7 +588,9 @@ export class JobQueueManager extends EventEmitter {
       if (activeController.signal.aborted) {
         throw new Error('Cancelled');
       }
-      job.startedAt = new Date().toISOString();
+      if (!job.startedAt) {
+        job.startedAt = new Date().toISOString();
+      }
 
       if (job.mode === 'direct') {
         await this.executeDirectStream(job, activeController.signal);
@@ -463,42 +609,60 @@ export class JobQueueManager extends EventEmitter {
       outcome = { status: 'completed' };
     } catch (err) {
       const msg = (err as Error).message || 'Transfer failed';
-      if (activeController.signal.aborted || msg === 'Cancelled') {
+      if (this.pausedIds.has(job.id)) {
+        outcome = { status: 'paused' };
+      } else if (activeController.signal.aborted || msg === 'Cancelled') {
         outcome = { status: 'cancelled' };
       } else {
         outcome = { status: 'failed', error: msg };
       }
     } finally {
-      if (job.mode === 'staged') {
-        await fs.rm(jobStagingDir, { recursive: true, force: true }).catch(() => {});
-        await fs.rmdir(jobStagingRoot).catch(() => {});
-      }
+      this.pausedIds.delete(job.id);
 
-      if (outcome.status === 'completed') {
-        job.status = 'completed';
-        job.phaseLabel = 'Completed';
+      if (outcome.status === 'paused') {
+        if (job.mode === 'staged') {
+          this.resumeStagingDirs.set(job.id, jobStagingDir);
+        }
+        job.status = 'paused';
+        job.phaseLabel = 'Paused';
         job.progress = {
           ...job.progress,
-          percent: 100,
           speedBytesPerSec: 0,
-          etaSeconds: 0,
+          etaSeconds: null,
         };
-        job.finishedAt = new Date().toISOString();
-        this.liveHeaders.delete(job.id);
-        this.appendLog(job, `Completed -> ${job.destinationRemote}`);
-      } else if (outcome.status === 'cancelled') {
-        job.status = 'cancelled';
-        job.phaseLabel = 'Cancelled';
-        job.error = undefined;
-        job.finishedAt = new Date().toISOString();
-        this.liveHeaders.delete(job.id);
-        this.appendLog(job, 'Job cancelled');
+        this.appendLog(job, 'Job paused (staging preserved for resume)');
       } else {
-        job.status = 'failed';
-        job.phaseLabel = 'Failed';
-        job.error = outcome.error;
-        job.finishedAt = new Date().toISOString();
-        this.appendLog(job, `ERROR: ${outcome.error}`);
+        if (job.mode === 'staged') {
+          await fs.rm(jobStagingDir, { recursive: true, force: true }).catch(() => {});
+          await fs.rmdir(jobStagingRoot).catch(() => {});
+        }
+
+        if (outcome.status === 'completed') {
+          job.status = 'completed';
+          job.phaseLabel = 'Completed';
+          job.progress = {
+            ...job.progress,
+            percent: 100,
+            speedBytesPerSec: 0,
+            etaSeconds: 0,
+          };
+          job.finishedAt = new Date().toISOString();
+          this.liveHeaders.delete(job.id);
+          this.appendLog(job, `Completed -> ${job.destinationRemote}`);
+        } else if (outcome.status === 'cancelled') {
+          job.status = 'cancelled';
+          job.phaseLabel = 'Cancelled';
+          job.error = undefined;
+          job.finishedAt = new Date().toISOString();
+          this.liveHeaders.delete(job.id);
+          this.appendLog(job, 'Job cancelled');
+        } else {
+          job.status = 'failed';
+          job.phaseLabel = 'Failed';
+          job.error = outcome.error;
+          job.finishedAt = new Date().toISOString();
+          this.appendLog(job, `ERROR: ${outcome.error}`);
+        }
       }
 
       this.activeControllers.delete(job.id);

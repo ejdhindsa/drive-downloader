@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { cancelJob, deleteJob, retryJob } from '../api/client';
+  import { cancelJob, deleteJob, pauseJob, prioritizeJob, resumeJob, retryJob } from '../api/client';
   import type { Job } from '../api/types';
   import { toasts } from '../stores/toasts.svelte';
   import { formatBytes, formatDuration, formatEta, formatSpeed } from '../utils/format';
@@ -10,17 +10,23 @@
 
   let { job }: Props = $props();
 
-  let busyAction = $state<'cancel' | 'retry' | 'delete' | null>(null);
+  let busyAction = $state<'cancel' | 'pause' | 'resume' | 'prioritize' | 'retry' | 'delete' | null>(null);
   let logsOpen = $state(false);
   let logPre = $state<HTMLPreElement | null>(null);
 
   let isActive = $derived(
     job.status === 'queued' ||
+      job.status === 'paused' ||
       job.status === 'downloading' ||
       job.status === 'extracting' ||
       job.status === 'uploading',
   );
 
+  let canPause = $derived(
+    job.status === 'queued' || (job.status === 'downloading' && job.mode === 'staged'),
+  );
+  let isPaused = $derived(job.status === 'paused');
+  let canPrioritize = $derived(job.status === 'queued');
   let isRetryable = $derived(job.status === 'failed' || job.status === 'cancelled');
   let title = $derived(job.resolvedFilename || job.url);
   let duration = $derived(formatDuration(job.startedAt, job.finishedAt));
@@ -91,11 +97,18 @@
     return 'plain';
   }
 
-  async function runAction(action: 'cancel' | 'retry' | 'delete') {
+  async function runAction(action: 'cancel' | 'pause' | 'resume' | 'prioritize' | 'retry' | 'delete') {
     busyAction = action;
     try {
       if (action === 'cancel') {
         await cancelJob(job.id);
+      } else if (action === 'pause') {
+        await pauseJob(job.id);
+      } else if (action === 'resume') {
+        await resumeJob(job.id);
+      } else if (action === 'prioritize') {
+        await prioritizeJob(job.id);
+        toasts.push('info', 'Moved to front of queue.');
       } else if (action === 'retry') {
         await retryJob(job.id);
       } else {
@@ -158,6 +171,9 @@
     </div>
 
     <div class="badges">
+      {#if job.status === 'queued' && job.priority}
+        <span class="badge priority-badge">Priority</span>
+      {/if}
       <span class="badge mode-badge">{job.mode === 'direct' ? 'Direct' : 'Staged 16x'}</span>
       <span class="badge status-badge badge-{job.status}">{job.status}</span>
     </div>
@@ -209,6 +225,36 @@
 
   <div class="card-footer">
     <div class="actions">
+      {#if canPrioritize}
+        <button
+          type="button"
+          class="btn"
+          disabled={busyAction !== null}
+          onclick={() => void runAction('prioritize')}
+        >
+          {busyAction === 'prioritize' ? 'Moving...' : '↑ Top'}
+        </button>
+      {/if}
+      {#if canPause}
+        <button
+          type="button"
+          class="btn"
+          disabled={busyAction !== null}
+          onclick={() => void runAction('pause')}
+        >
+          {busyAction === 'pause' ? 'Pausing...' : 'Pause'}
+        </button>
+      {/if}
+      {#if isPaused}
+        <button
+          type="button"
+          class="btn primary"
+          disabled={busyAction !== null}
+          onclick={() => void runAction('resume')}
+        >
+          {busyAction === 'resume' ? 'Resuming...' : 'Resume'}
+        </button>
+      {/if}
       {#if isActive}
         <button
           type="button"
@@ -299,6 +345,10 @@
 
   .job-card.status-queued {
     border-left-color: var(--uw-neutral-solid);
+  }
+
+  .job-card.status-paused {
+    border-left-color: var(--uw-warning-solid);
   }
 
   .job-card.status-downloading {
@@ -418,6 +468,18 @@
   .badge-queued {
     background: var(--uw-neutral-bg);
     color: var(--uw-neutral-fg);
+  }
+
+  .badge-paused {
+    background: var(--uw-warning-bg);
+    border-color: var(--uw-warning-border);
+    color: var(--uw-warning-fg);
+  }
+
+  .priority-badge {
+    background: var(--uw-info-bg);
+    border-color: var(--uw-info-border);
+    color: var(--uw-info-fg);
   }
 
   .badge-downloading {
@@ -642,6 +704,16 @@
   .btn:hover:not(:disabled) {
     background: var(--uw-bg-surface-hover);
     border-color: var(--uw-border-strong);
+  }
+
+  .btn.primary {
+    background: var(--uw-brand-bg);
+    border-color: var(--uw-brand-border);
+    color: var(--uw-brand-fg);
+  }
+
+  .btn.primary:hover:not(:disabled) {
+    background: var(--uw-brand-bg-hover);
   }
 
   .btn.danger {

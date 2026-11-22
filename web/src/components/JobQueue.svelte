@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { clearFinishedJobs } from '../api/client';
+  import { cancelAllActive, clearFinishedJobs, retryAllFailed } from '../api/client';
   import { toasts } from '../stores/toasts.svelte';
   import { transferStore } from '../stores/transferStore.svelte';
   import JobCard from './JobCard.svelte';
@@ -7,10 +7,14 @@
   type FilterTab = 'all' | 'active' | 'completed' | 'failed';
 
   let activeFilter = $state<FilterTab>('all');
-  let clearing = $state(false);
+  let searchQuery = $state('');
+  let busyBulk = $state<'clear' | 'retry' | 'cancel' | null>(null);
 
   let completedCount = $derived(
     transferStore.jobs.filter((j) => j.status === 'completed').length,
+  );
+  let failedOnlyCount = $derived(
+    transferStore.jobs.filter((j) => j.status === 'failed').length,
   );
   let failedCount = $derived(
     transferStore.jobs.filter((j) => j.status === 'failed' || j.status === 'cancelled').length,
@@ -18,14 +22,23 @@
   let finishedCount = $derived(completedCount + failedCount);
 
   let filteredJobs = $derived.by(() => {
-    if (activeFilter === 'active') return transferStore.activeJobs;
-    if (activeFilter === 'completed') {
-      return transferStore.jobs.filter((j) => j.status === 'completed');
+    let base = transferStore.jobs;
+    if (activeFilter === 'active') base = transferStore.activeJobs;
+    else if (activeFilter === 'completed') base = base.filter((j) => j.status === 'completed');
+    else if (activeFilter === 'failed') {
+      base = base.filter((j) => j.status === 'failed' || j.status === 'cancelled');
     }
-    if (activeFilter === 'failed') {
-      return transferStore.jobs.filter((j) => j.status === 'failed' || j.status === 'cancelled');
-    }
-    return transferStore.jobs;
+
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return base;
+    return base.filter((j) => {
+      const name = (j.resolvedFilename || '').toLowerCase();
+      return (
+        name.includes(q) ||
+        j.url.toLowerCase().includes(q) ||
+        j.destinationRemote.toLowerCase().includes(q)
+      );
+    });
   });
 
   const tabs = $derived<Array<{ id: FilterTab; label: string; count: number }>>([
@@ -36,7 +49,7 @@
   ]);
 
   async function handleClearFinished() {
-    clearing = true;
+    busyBulk = 'clear';
     try {
       const removed = await clearFinishedJobs();
       if (removed > 0) {
@@ -45,7 +58,31 @@
     } catch (err) {
       toasts.push('danger', err instanceof Error ? err.message : 'Failed to clear finished jobs');
     } finally {
-      clearing = false;
+      busyBulk = null;
+    }
+  }
+
+  async function handleRetryFailed() {
+    busyBulk = 'retry';
+    try {
+      const retried = await retryAllFailed();
+      toasts.push('success', `Re-queued ${retried} failed transfer(s).`);
+    } catch (err) {
+      toasts.push('danger', err instanceof Error ? err.message : 'Failed to retry jobs');
+    } finally {
+      busyBulk = null;
+    }
+  }
+
+  async function handleCancelAll() {
+    busyBulk = 'cancel';
+    try {
+      const cancelled = await cancelAllActive();
+      toasts.push('info', `Cancelled ${cancelled} active transfer(s).`);
+    } catch (err) {
+      toasts.push('danger', err instanceof Error ? err.message : 'Failed to cancel active jobs');
+    } finally {
+      busyBulk = null;
     }
   }
 </script>
@@ -57,40 +94,83 @@
       <p class="queue-sub">Live status, progress, and per-job output</p>
     </div>
 
-    <button
-      type="button"
-      class="clear-btn"
-      disabled={clearing || finishedCount === 0}
-      onclick={handleClearFinished}
-    >
-      {clearing ? 'Clearing...' : 'Clear Finished'}
-    </button>
-  </div>
+    <div class="bulk-actions">
+      {#if failedOnlyCount > 0}
+        <button
+          type="button"
+          class="bulk-btn"
+          disabled={busyBulk !== null}
+          onclick={handleRetryFailed}
+        >
+          {busyBulk === 'retry' ? 'Retrying...' : `Retry Failed (${failedOnlyCount})`}
+        </button>
+      {/if}
 
-  <div class="filter-bar">
-    {#each tabs as tab (tab.id)}
+      {#if transferStore.activeCount > 0}
+        <button
+          type="button"
+          class="bulk-btn danger"
+          disabled={busyBulk !== null}
+          onclick={handleCancelAll}
+        >
+          {busyBulk === 'cancel' ? 'Cancelling...' : 'Cancel All'}
+        </button>
+      {/if}
+
       <button
         type="button"
-        class="filter-pill"
-        class:active={activeFilter === tab.id}
-        onclick={() => (activeFilter = tab.id)}
+        class="bulk-btn"
+        disabled={busyBulk !== null || finishedCount === 0}
+        onclick={handleClearFinished}
       >
-        <span>{tab.label}</span>
-        <span class="pill-count mono">{tab.count}</span>
+        {busyBulk === 'clear' ? 'Clearing...' : 'Clear Finished'}
       </button>
-    {/each}
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="filter-bar">
+      {#each tabs as tab (tab.id)}
+        <button
+          type="button"
+          class="filter-pill"
+          class:active={activeFilter === tab.id}
+          onclick={() => (activeFilter = tab.id)}
+        >
+          <span>{tab.label}</span>
+          <span class="pill-count mono">{tab.count}</span>
+        </button>
+      {/each}
+    </div>
+
+    {#if transferStore.jobs.length > 0}
+      <input
+        type="search"
+        class="search-input"
+        bind:value={searchQuery}
+        placeholder="Filter by file, URL, or folder..."
+      />
+    {/if}
   </div>
 
   {#if filteredJobs.length === 0}
     <div class="empty-state">
       <span class="material-symbols-outlined empty-icon">cloud_sync</span>
       <p class="empty-title">
-        {transferStore.jobs.length === 0 ? 'No transfers yet' : `No ${activeFilter} transfers`}
+        {#if transferStore.jobs.length === 0}
+          No transfers yet
+        {:else if searchQuery.trim()}
+          No matches for "{searchQuery.trim()}"
+        {:else}
+          No {activeFilter} transfers
+        {/if}
       </p>
       <p class="empty-sub">
-        {transferStore.jobs.length === 0
-          ? 'Paste a URL on the left and hit Queue Download to start.'
-          : 'Switch filters above to view other transfers.'}
+        {#if transferStore.jobs.length === 0}
+          Paste a URL on the left and hit Queue Download to start.
+        {:else}
+          Clear the search or switch filters above to view other transfers.
+        {/if}
       </p>
     </div>
   {:else}
@@ -134,7 +214,13 @@
     margin-top: var(--uw-space-0-5);
   }
 
-  .clear-btn {
+  .bulk-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--uw-space-2);
+  }
+
+  .bulk-btn {
     border: 1px solid var(--uw-border-default);
     background: var(--uw-bg-subtle);
     color: var(--uw-fg-default);
@@ -149,14 +235,54 @@
       border-color var(--uw-duration-fast) var(--uw-easing-standard);
   }
 
-  .clear-btn:hover:not(:disabled) {
+  .bulk-btn:hover:not(:disabled) {
     background: var(--uw-bg-surface-hover);
     border-color: var(--uw-border-strong);
   }
 
-  .clear-btn:disabled {
+  .bulk-btn.danger {
+    color: var(--uw-danger-fg);
+    border-color: var(--uw-danger-border);
+    background: var(--uw-danger-bg);
+  }
+
+  .bulk-btn.danger:hover:not(:disabled) {
+    background: var(--uw-danger-bg-hover);
+  }
+
+  .bulk-btn:disabled {
     opacity: 0.45;
     cursor: not-allowed;
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--uw-space-2);
+  }
+
+  .search-input {
+    flex: 1;
+    min-width: 11rem;
+    max-width: 16rem;
+    background: var(--uw-bg-subtle);
+    color: var(--uw-fg-default);
+    border: 1px solid var(--uw-border-default);
+    border-radius: var(--uw-radius-full);
+    padding: var(--uw-space-1) var(--uw-space-3);
+    font-family: var(--uw-font-sans);
+    font-size: var(--uw-font-size-xs);
+    transition:
+      border-color var(--uw-duration-fast) var(--uw-easing-standard),
+      box-shadow var(--uw-duration-fast) var(--uw-easing-standard);
+  }
+
+  .search-input:focus {
+    outline: none;
+    border-color: var(--uw-focus-ring);
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--uw-brand-solid) 18%, transparent);
   }
 
   .filter-bar {

@@ -77,6 +77,41 @@ export async function cancelJob(id: string): Promise<Job> {
   return data.job;
 }
 
+export async function pauseJob(id: string): Promise<Job> {
+  const data = await requestJson<{ job: Job }>(`/api/jobs/${encodeURIComponent(id)}/pause`, {
+    method: 'POST',
+  });
+  return data.job;
+}
+
+export async function resumeJob(id: string): Promise<Job> {
+  const data = await requestJson<{ job: Job }>(`/api/jobs/${encodeURIComponent(id)}/resume`, {
+    method: 'POST',
+  });
+  return data.job;
+}
+
+export async function prioritizeJob(id: string): Promise<Job> {
+  const data = await requestJson<{ job: Job }>(`/api/jobs/${encodeURIComponent(id)}/prioritize`, {
+    method: 'POST',
+  });
+  return data.job;
+}
+
+export async function retryAllFailed(): Promise<number> {
+  const data = await requestJson<{ retried: number }>('/api/jobs/retry-failed', {
+    method: 'POST',
+  });
+  return data.retried ?? 0;
+}
+
+export async function cancelAllActive(): Promise<number> {
+  const data = await requestJson<{ cancelled: number }>('/api/jobs/cancel-all', {
+    method: 'POST',
+  });
+  return data.cancelled ?? 0;
+}
+
 export async function retryJob(id: string): Promise<Job> {
   const data = await requestJson<{ job: Job }>(`/api/jobs/${encodeURIComponent(id)}/retry`, {
     method: 'POST',
