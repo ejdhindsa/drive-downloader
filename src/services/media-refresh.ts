@@ -82,7 +82,7 @@ export async function refreshMediaTargets(
     try {
       const res = await fetchImpl(`${config.jellyfinUrl}/Library/Refresh`, {
         method: 'POST',
-        headers: { 'X-Emby-Token': config.jellyfinApiKey },
+        headers: { Authorization: `MediaBrowser Token="${config.jellyfinApiKey}"` },
         signal: AbortSignal.timeout(10_000),
       });
       await res.body?.cancel().catch(() => {});
