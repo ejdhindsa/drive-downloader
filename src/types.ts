@@ -60,3 +60,28 @@ export interface DiskStatus {
   freeBytes: number;
   totalBytes: number;
 }
+
+export interface CpuStats {
+  percent: number;
+  cores: number;
+  loadAvg1m: number;
+}
+
+export interface MemoryStats {
+  usedBytes: number;
+  totalBytes: number;
+  usedPercent: number;
+}
+
+export interface DriveQuotaStats {
+  usedBytes: number;
+  freeBytes: number;
+  totalBytes: number;
+}
+
+export interface SystemStats {
+  cpu: CpuStats;
+  memory: MemoryStats;
+  disk: DiskStatus & { usedPercent: number };
+  driveQuota: DriveQuotaStats | null;
+}

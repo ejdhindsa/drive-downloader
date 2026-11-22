@@ -8,6 +8,7 @@ import { refreshMediaTargets } from './services/jellyfin';
 import { JobQueueManager } from './services/queue';
 import { listDriveDirectories } from './services/rclone';
 import { JobStore, verifyWritableDirectory } from './services/store';
+import { SystemStatsCollector } from './services/system-stats';
 import type { CreateJobsRequest, Job } from './types';
 import { sanitizeRelativePath } from './utils/security';
 
@@ -38,7 +39,14 @@ export async function buildApp(opts: BuildAppOptions): Promise<{
     prefix: '/',
   });
 
+  const statsCollector = new SystemStatsCollector(config);
+
   app.get('/api/health', async () => ({ ok: true }));
+
+  app.get('/api/stats', async () => {
+    const disk = await queue.getDiskStatus().catch(() => ({ freeBytes: 0, totalBytes: 0 }));
+    return statsCollector.collect(disk);
+  });
 
   app.get('/api/config', async () => {
     const disk = await queue.getDiskStatus().catch(() => ({ freeBytes: 0, totalBytes: 0 }));
