@@ -1,6 +1,7 @@
 <script lang="ts">
   import Header from './components/Header.svelte';
   import ToastStack from './components/ToastStack.svelte';
+  import TransferComposer from './components/TransferComposer.svelte';
   import { transferStore } from './stores/transferStore.svelte';
 
   $effect(() => {
@@ -12,13 +13,7 @@
   <Header />
 
   <main class="workspace">
-    <section class="panel">
-      <h2>New Transfer</h2>
-      <p class="muted">
-        Connected to <code class="mono">{transferStore.config?.rcloneRoot ?? '...'}</code>. The
-        transfer composer mounts here next.
-      </p>
-    </section>
+    <TransferComposer />
 
     <section class="panel">
       <div class="panel-head">
@@ -71,27 +66,14 @@
     margin-bottom: var(--uw-space-2);
   }
 
-  .panel h2 {
+  .panel-head h2 {
     font-size: var(--uw-font-size-lg);
     font-weight: var(--uw-font-weight-semibold);
-    margin-bottom: var(--uw-space-2);
-  }
-
-  .panel-head h2 {
-    margin-bottom: 0;
   }
 
   .muted {
     color: var(--uw-fg-muted);
     font-size: var(--uw-font-size-sm);
-  }
-
-  .muted code {
-    color: var(--uw-brand-fg);
-    background: var(--uw-brand-bg);
-    padding: var(--uw-space-0-5) var(--uw-space-2);
-    border-radius: var(--uw-radius-sm);
-    font-size: var(--uw-font-size-xs);
   }
 
   .count-pill {
