@@ -1,0 +1,131 @@
+import type { ResolvedTarget } from '../types';
+import { sanitizeFilename, sanitizeHeaders, validatePublicUrl } from '../utils/security';
+import { directResolver } from './direct';
+import type { ResolverContext, UrlResolver } from './types';
+
+export interface ResolveUrlResult {
+  resolverId: string;
+  resolverLabel: string;
+  items: ResolvedTarget[];
+  warnings: string[];
+}
+
+export interface InspectBatchResult {
+  items: ResolvedTarget[];
+  warnings: string[];
+}
+
+const INSPECT_CONCURRENCY = 4;
+
+export class ResolverRegistry {
+  private readonly resolvers: UrlResolver[];
+
+  constructor(resolvers: UrlResolver[] = []) {
+    this.resolvers = resolvers;
+  }
+
+  listResolvers(): Array<{ id: string; label: string }> {
+    return [...this.resolvers, directResolver].map((r) => ({ id: r.id, label: r.label }));
+  }
+
+  private pickResolver(url: URL): UrlResolver {
+    for (const resolver of this.resolvers) {
+      if (resolver.canHandle(url)) {
+        return resolver;
+      }
+    }
+    return directResolver;
+  }
+
+  async resolveUrl(rawUrl: string, ctx: ResolverContext): Promise<ResolveUrlResult> {
+    const parsed = await validatePublicUrl(rawUrl, ctx.lookupFn);
+    const resolver = this.pickResolver(parsed);
+    ctx.onLog?.(`Resolving via ${resolver.label}...`);
+
+    const output = await resolver.resolve(parsed, ctx);
+    const warnings = [...(output.warnings ?? [])];
+    const safeItems: ResolvedTarget[] = [];
+
+    for (const item of output.items) {
+      // Re-validate every resolved target URL to block SSRF from hoster redirects/APIs.
+      const validatedTarget = await validatePublicUrl(item.downloadUrl, ctx.lookupFn);
+      const safeHeaders = item.headers ? sanitizeHeaders(item.headers) : undefined;
+      let safeFilename: string | undefined;
+      if (item.filename) {
+        try {
+          safeFilename = sanitizeFilename(item.filename);
+        } catch {
+          safeFilename = undefined;
+        }
+      }
+
+      safeItems.push({
+        ...item,
+        downloadUrl: validatedTarget.toString(),
+        filename: safeFilename,
+        headers: safeHeaders && safeHeaders.length > 0 ? safeHeaders : undefined,
+        sourceUrl: item.sourceUrl ?? parsed.toString(),
+        hoster: item.hoster || resolver.label,
+      });
+    }
+
+    if (safeItems.length === 0) {
+      throw new Error(`${resolver.label} resolver returned no downloadable targets`);
+    }
+
+    return {
+      resolverId: resolver.id,
+      resolverLabel: resolver.label,
+      items: safeItems,
+      warnings,
+    };
+  }
+
+  async inspectUrls(rawUrls: string[], ctx: ResolverContext): Promise<InspectBatchResult> {
+    const cleaned = rawUrls.map((u) => u.trim()).filter(Boolean);
+    if (cleaned.length === 0) {
+      throw new Error('At least one URL is required');
+    }
+    if (cleaned.length > 50) {
+      throw new Error('Cannot inspect more than 50 URLs at once');
+    }
+
+    const slots: Array<{ items: ResolvedTarget[]; warnings: string[] }> = new Array(cleaned.length);
+    let cursor = 0;
+
+    const worker = async () => {
+      while (true) {
+        const idx = cursor;
+        cursor += 1;
+        if (idx >= cleaned.length) return;
+        const targetUrl = cleaned[idx];
+        try {
+          const res = await this.resolveUrl(targetUrl, { ...ctx, inspectOnly: true });
+          slots[idx] = { items: res.items, warnings: res.warnings };
+        } catch (err) {
+          slots[idx] = {
+            items: [],
+            warnings: [`${targetUrl}: ${(err as Error).message}`],
+          };
+        }
+      }
+    };
+
+    const workerCount = Math.min(INSPECT_CONCURRENCY, cleaned.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+    const items: ResolvedTarget[] = [];
+    const warnings: string[] = [];
+    for (const slot of slots) {
+      if (!slot) continue;
+      items.push(...slot.items);
+      warnings.push(...slot.warnings);
+    }
+
+    return { items, warnings };
+  }
+}
+
+export function createResolverRegistry(customResolvers: UrlResolver[] = []): ResolverRegistry {
+  return new ResolverRegistry(customResolvers);
+}
